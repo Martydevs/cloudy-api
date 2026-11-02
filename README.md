@@ -1,0 +1,235 @@
+# Cloudy API
+
+On-demand YouTube download service (MP4 720p, MP4 1080p, MP3) for the Cloudy
+Nuxt app on Vercel. Built with FastAPI + [yt-dlp](https://github.com/yt-dlp/yt-dlp),
+deployed as a Docker web service on Render Free.
+
+> Downloading from YouTube conflicts with YouTube's Terms of Service. Running
+> this service is the owner's decision and responsibility.
+
+## How it works
+
+- **yt-dlp** is the only YouTube library. It fetches metadata, picks streams and
+  runs its postprocessors (merge to MP4, extract MP3).
+- **ffmpeg / ffprobe** are required system tools; yt-dlp drives them.
+- **A JavaScript runtime** (+ `yt-dlp-ejs`, pulled by `yt-dlp[default]`) solves
+  YouTube's JS challenges. Without one, some formats disappear. The image ships
+  **deno** and **Node.js 26 LTS**. yt-dlp uses the best one installed (deno → node
+  → quickjs → bun), so Node takes over automatically if deno is removed. See
+  [JS runtimes](#js-runtimes).
+- Jobs are async: create → poll → the browser downloads the file directly from
+  Render through a short-lived HMAC-signed URL.
+- Render Free constraints: one instance, one worker, in-memory job store, files
+  in a temp dir with a TTL. A restart loses jobs; clients get `404` and should
+  treat that as "expired, retry".
+
+## API (v1)
+
+All `/v1/*` routes need the `X-API-Key` header, except the signed file route.
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/healthz` | `{status, yt_dlp_version, yt_dlp_ejs_version, ffmpeg, js_runtime, js_runtimes: {name: found}}`. No auth. `503` when ffmpeg/ffprobe or yt-dlp-ejs is missing, or none of the enabled JS runtimes is installed. |
+| GET | `/v1/videos/{video_id}` | Title, duration, thumbnail, channel, `available_heights`, `downloadable`, `reason` (`too_long`, `live`, `unknown_duration`). |
+| POST | `/v1/jobs` | `{video_ids: [1..10], format: "mp4_720" \| "mp4_1080" \| "mp3"}` → `202 {job_id, status}`. `422` for bad/too-long/unavailable videos, `429` when the queue is full. |
+| GET | `/v1/jobs/{job_id}` | `status` (`queued\|running\|zipping\|done\|failed\|expired`), `progress`, `items[]`, and once done `download_url`, `filename`, `size_bytes`, `expires_at`. |
+| GET | `/v1/jobs/{job_id}/file?exp=…&sig=…` | Streams the file as an attachment. Signature-verified, no API key. `403` bad/expired link, `410` file expired. |
+| DELETE | `/v1/jobs/{job_id}` | Cancel / clean up early. `204`. |
+
+Behaviour:
+
+- Video IDs must match `^[A-Za-z0-9_-]{11}$`; the YouTube URL is built server-side.
+- Batches are de-duplicated and processed sequentially. A single-video job returns
+  the file itself (`My Title [id].mp4`); a batch returns `cloudy-batch-<id8>.zip`
+  with the successful items. A job is `failed` only when every item failed.
+- `mp4_1080` falls back to the best height ≤ 1080; check `items[].actual_height`.
+- Error bodies look like `{"detail": {"code": "...", "message": "..."}}` (e.g.
+  `unauthorized`, `not_found`, `queue_full`, `batch_too_large`, `videos_rejected`
+  with a `videos[]` list, `invalid_signature`, `link_expired`, `expired`). Request
+  validation errors (bad ID pattern, unknown format) use FastAPI's standard
+  `{"detail": [ ... ]}` list. Item error codes: `private`, `unavailable`, `age_restricted`, `members_only`,
+  `geo_restricted`, `live`, `format_unavailable`, `bot_check`, `ffmpeg_missing`,
+  `download_failed`, `cancelled`, `internal`.
+
+## Configuration
+
+Copy `.env.example` to `.env`.
+
+| Var | Default | |
+|---|---|---|
+| `API_KEY` | — | Required. Only the Nuxt server sends it. |
+| `SIGNING_SECRET` | — | Required. HMAC key for download links. |
+| `ALLOWED_ORIGINS` | empty | Comma-separated CORS origins (the Vercel domain). |
+| `MAX_CONCURRENT_JOBS` | `1` | |
+| `MAX_QUEUE` | `20` | Waiting jobs before `429`. |
+| `MAX_BATCH` | `10` | |
+| `MAX_DURATION_SECONDS` | `1800` | |
+| `FILE_TTL_MINUTES` | `30` | Files deleted after this; the record answers `expired` for another TTL. |
+| `SIGNED_URL_TTL_SECONDS` | `600` | |
+| `PROBE_CONCURRENCY` | `3` | Parallel metadata probes on job creation. Lower to `1` if Render runs out of memory. |
+| `WORK_DIR` | `/tmp/cloudy` | |
+| `PUBLIC_BASE_URL` | `RENDER_EXTERNAL_URL` | Base for `download_url`; falls back to the request URL. |
+| `YTDLP_COOKIES_FILE` | — | Optional cookies.txt for bot checks. |
+| `YTDLP_PROXY` | — | Optional proxy URL. |
+| `YTDLP_JS_RUNTIMES` | `deno,node` | Enabled JS runtimes, comma-separated `name[:path]` (`deno`, `node`, `bun`, `quickjs`). |
+| `YTDLP_EXTRACTOR_ARGS` | — | yt-dlp `--extractor-args`, space-separated `IE_KEY:ARGS` entries. See [Extractor arguments](#extractor-arguments). |
+
+## Local development
+
+Requires [uv](https://docs.astral.sh/uv/) and [bun](https://bun.sh) (scripts only).
+
+**Option A — native tools**
+
+```bash
+brew install ffmpeg node        # Node >= 22 (or deno >= 2.3); or your distro's packages
+cp .env.example .env            # set API_KEY and SIGNING_SECRET
+uv sync
+bun run dev                     # API docs (Scalar): http://localhost:8000/docs
+```
+
+**Option B — Docker** (ffmpeg, deno and Node included)
+
+```bash
+docker build -t cloudy-api .
+docker run -p 8000:8000 --env-file .env cloudy-api
+```
+
+Smoke test:
+
+```bash
+H=http://localhost:8000; K="X-API-Key: change-me"
+curl $H/healthz
+curl -H "$K" $H/v1/videos/dQw4w9WgXcQ
+curl -H "$K" -H 'content-type: application/json' \
+  -d '{"video_ids":["dQw4w9WgXcQ"],"format":"mp4_720"}' $H/v1/jobs
+curl -H "$K" $H/v1/jobs/<job_id>          # repeat until "done"
+curl -OJ "<download_url>"
+ffprobe -v error -show_entries stream=codec_name,height <file>
+```
+
+## API docs
+
+Interactive docs are served by [Scalar](https://scalar.com) at `/docs` (Swagger UI
+and ReDoc are disabled). The raw spec is at `/openapi.json`. Use the
+**Authentication** panel to set `X-API-Key` before trying requests.
+
+## Testing
+
+```bash
+bun run test            # uv run pytest: unit suite + coverage gate (fail_under = 90)
+bun run coverage:html   # same, plus an HTML report in htmlcov/
+```
+
+- Unit tests live in `tests/unit/` and never touch the network, YouTube, ffmpeg or
+  any JS runtime. `tests/conftest.py` provides a `FakeDownloader` (wired in via
+  `create_app(settings, downloader=...)`), and `test_downloader.py` uses a fake
+  `YoutubeDL` through the `ydl_factory` argument.
+- Every test gets its own `tmp_path` as `WORK_DIR`; clocks and the cleanup sleep
+  are injected, so no test waits on real time.
+- Coverage is line + branch, configured in `pyproject.toml`. The run fails below 90%.
+- CI (`.github/workflows/ci.yml`) runs `uv sync --locked` and `uv run pytest` on every
+  push and PR and uploads `coverage.xml`.
+
+## JS runtimes
+
+yt-dlp needs a JavaScript runtime to solve YouTube's challenges. `YTDLP_JS_RUNTIMES`
+controls which ones it may use. Entries follow yt-dlp's `--js-runtimes` syntax:
+`name` or `name:/path/to/executable-or-dir`.
+
+| Runtime | Executable | Minimum version |
+|---|---|---|
+| `deno` | `deno` | 2.3 |
+| `node` | `node` | 22 |
+| `quickjs` | `qjs` | 2023-12-09 (any quickjs-ng); versions before 2025-04-26 / ng 0.12 are very slow |
+| `bun` | `bun` | 1.2.11–1.3.14. **Deprecated** by yt-dlp and runs without sandboxing |
+
+The order in the variable doesn't matter. yt-dlp always tries installed runtimes in
+the order deno → node → quickjs → bun. The default `deno,node` means Node is the
+fallback.
+
+**Retiring deno:** remove the `deno` stage and its `COPY` line from the `Dockerfile`,
+then set `YTDLP_JS_RUNTIMES=node` (or just leave the default; a missing deno is
+skipped). `/healthz` stays `ok` as long as one enabled runtime is installed.
+Upgrading Node is a `NODE_VERSION` build arg bump. Keep it on an LTS release.
+
+## yt-dlp dependencies
+
+What the [yt-dlp README](https://github.com/yt-dlp/yt-dlp#dependencies) and
+[EJS wiki](https://github.com/yt-dlp/yt-dlp/wiki/EJS) require, and how this repo
+covers it:
+
+| Dependency | Why | Provided by |
+|---|---|---|
+| ffmpeg + ffprobe (binaries) | Merge DASH video+audio, extract MP3 | `apt-get install ffmpeg` in the image |
+| yt-dlp-ejs | YouTube JS challenge solver ("required for full YouTube support") | `yt-dlp[default]`, locked in `uv.lock` at the exact version yt-dlp pins |
+| JS runtime | Runs yt-dlp-ejs | deno + node in the image ([JS runtimes](#js-runtimes)) |
+| certifi, brotli, websockets, requests/urllib3, pycryptodomex, mutagen | TLS roots, compression, HTTPS proxies, AES-HLS | `yt-dlp[default]` |
+
+Deliberately left out:
+
+- **curl_cffi (impersonation):** yt-dlp only uses it when an extractor or
+  `--impersonate` asks for it, and YouTube doesn't. The README also warns that
+  forcing impersonation hurts speed and stability.
+- **AtomicParsley, phantomjs, rtmpdump, secretstorage:** they cover thumbnail
+  embedding, legacy non-YouTube JS, RTMP and browser-cookie extraction, none of
+  which this service uses.
+- **`remote_components`:** not needed because yt-dlp-ejs is installed as a package.
+  The service never fetches solver code at runtime.
+
+`scripts/check_deps.py` (`bun run check:deps`) checks all of this: ffmpeg/ffprobe,
+minimum runtime versions, and that yt-dlp-ejs matches yt-dlp's pin. The Docker build
+runs it, so a broken image fails to build. `/healthz` also reports `yt_dlp_ejs_version`
+and returns `503` if it's missing.
+
+### Extractor arguments
+
+`YTDLP_EXTRACTOR_ARGS` passes yt-dlp `--extractor-args` values and is parsed by
+yt-dlp's own option parser (config files ignored). Separate entries with spaces and
+quote values that contain spaces. Examples:
+
+```bash
+# Try other YouTube player clients when the defaults are blocked or missing formats
+YTDLP_EXTRACTOR_ARGS="youtube:player_client=default,mweb"
+# Manually supplied PO token (see the yt-dlp PO Token Guide)
+YTDLP_EXTRACTOR_ARGS="youtube:player_client=default,mweb;po_token=mweb.gvs+TOKEN"
+```
+
+Leave it unset unless downloads fail. yt-dlp's defaults are tuned per release.
+
+## Deploying to Render
+
+1. New → Blueprint, point at this repo (`render.yaml`): Docker runtime, Free plan,
+   health check `/healthz`. In the service settings, set auto-deploy to
+   "After CI checks pass" so a red build never ships.
+2. Set `API_KEY` and `ALLOWED_ORIGINS`; `SIGNING_SECRET` is generated.
+3. Run the smoke test above against `https://<service>.onrender.com` for each format
+   and a 3-video batch.
+
+Free instances sleep after 15 minutes idle (≈1 min cold start). Have the Nuxt app
+call `/healthz` when the YouTube page opens to wake it up.
+
+### When downloads start failing
+
+1. **Bump yt-dlp first.** YouTube changes often. Run
+   `uv lock --upgrade-package yt-dlp --upgrade-package yt-dlp-ejs` (yt-dlp-ejs must
+   move with yt-dlp), commit `uv.lock`, and redeploy. The Docker build fails if the
+   two don't match.
+2. "Sign in to confirm you're not a bot" (`bot_check`): Render's datacenter IPs get
+   flagged. Add a cookies file as a Render Secret File and set
+   `YTDLP_COOKIES_FILE=/etc/secrets/cookies.txt`, set `YTDLP_PROXY`, or try other
+   player clients / a PO token via `YTDLP_EXTRACTOR_ARGS`.
+3. `/healthz` returning `503` means ffmpeg, yt-dlp-ejs, or every enabled JS runtime
+   is missing from the image. Check `js_runtimes` and `yt_dlp_ejs_version` in the response.
+
+If the Python 3.15 image breaks (missing wheels), switch the Dockerfile to
+`python:3.14-slim-trixie` and lower `.python-version` / `requires-python` to 3.14.
+
+## Nuxt integration
+
+1. A Nuxt server route (`/api/yt/*`) reads `NUXT_CLOUDY_API_URL` and
+   `NUXT_CLOUDY_API_KEY` and proxies only the JSON calls (metadata, create, poll),
+   adding `X-API-Key`. The key never reaches the browser.
+2. The client polls `GET /v1/jobs/{id}` every 2–3 s and shows `progress` / `items`.
+3. When `status` is `done`, the browser navigates to `download_url`, which goes
+   straight to Render. The link expires in about 10 minutes; poll again to get a fresh one.
+4. Treat `404` on a job as "expired, retry", and `429` as "busy, retry later".

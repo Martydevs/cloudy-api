@@ -1,0 +1,17 @@
+.venv
+.git
+.gitignore
+.claude
+.agents
+.claudine
+.env
+.env.*
+!.env.example
+cookies.txt
+__pycache__
+*.py[oc]
+tests
+PLAN.md
+AGENTS.md
+skills-lock.json
+package.json

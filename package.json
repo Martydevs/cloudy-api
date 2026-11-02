@@ -1,5 +1,9 @@
 {
     "scripts": {
-        "dev": " uv run fastapi dev src/cloudy_api/main.py"
+        "dev": "uv run fastapi dev src/cloudy_api/main.py",
+        "start": "uv run fastapi run src/cloudy_api/main.py",
+        "test": "uv run pytest",
+        "coverage:html": "uv run pytest --cov-report=html",
+        "check:deps": "uv run python scripts/check_deps.py"
     }
 }

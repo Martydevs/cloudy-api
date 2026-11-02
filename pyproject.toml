@@ -1,7 +1,7 @@
 [project]
 name = "cloudy-api"
 version = "0.1.0"
-description = "Add your description here"
+description = "On-demand YouTube download API (yt-dlp + ffmpeg) for the Cloudy Nuxt app"
 readme = "README.md"
 authors = [
     { name = "Martydevs", email = "tmdev64@gmail.com" }
@@ -10,11 +10,38 @@ requires-python = ">=3.15"
 dependencies = [
     "fastapi[standard]>=0.162.0",
     "httpx>=0.28.1",
+    "pydantic-settings>=2.16.2",
+    "scalar-fastapi>=1.9.1",
+    "yt-dlp[default]>=2026.10.26",
 ]
 
 [project.scripts]
-cloudy-api = "cloudy_api:main"
+cloudy-api = "cloudy_api.cli:main"
 
 [build-system]
 requires = ["uv_build>=0.13.6,<0.14.0"]
 build-backend = "uv_build"
+
+[tool.fastapi]
+entrypoint = "cloudy_api.main:app"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+    "pytest-cov>=7.1.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --cov=cloudy_api --cov-branch --cov-report=term-missing --cov-report=xml"
+markers = ["integration: real yt-dlp/ffmpeg/network; excluded by default"]
+
+[tool.coverage.run]
+source = ["cloudy_api"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 90
+show_missing = true
+skip_covered = true
+exclude_also = ["if __name__ == .__main__.:", "if TYPE_CHECKING:"]
