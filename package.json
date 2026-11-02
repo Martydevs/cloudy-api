@@ -1,0 +1,5 @@
+{
+    "scripts": {
+        "dev": " uv run fastapi dev src/cloudy_api/main.py"
+    }
+}
