@@ -20,6 +20,11 @@ def clean_env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
         "MAX_BATCH",
         "YTDLP_JS_RUNTIMES",
         "YTDLP_EXTRACTOR_ARGS",
+        "OPENROUTER_API_KEY",
+        "OPENROUTER_APIKEY",
+        "OPENROUTER_MODEL",
+        "OPENROUTER_BASE_URL",
+        "LLM_TIMEOUT_SECONDS",
     ):
         monkeypatch.delenv(name, raising=False)
     return monkeypatch
@@ -42,6 +47,10 @@ def test_defaults(clean_env: pytest.MonkeyPatch) -> None:
     assert s.ytdlp_proxy is None
     assert s.ytdlp_js_runtimes == {"deno": None, "node": None}
     assert s.ytdlp_extractor_args == {}
+    assert s.openrouter_api_key is None
+    assert s.openrouter_model == "openai/gpt-4o-mini"
+    assert s.openrouter_base_url == "https://openrouter.ai/api/v1"
+    assert s.llm_timeout_seconds == 30
 
 
 def test_env_parsing(clean_env: pytest.MonkeyPatch) -> None:
@@ -62,6 +71,29 @@ def test_env_parsing(clean_env: pytest.MonkeyPatch) -> None:
     assert s.ytdlp_proxy is not None
     assert s.ytdlp_proxy.get_secret_value() == "http://proxy:8080"
     assert s.ytdlp_cookies_file == Path("/etc/secrets/cookies.txt")
+
+
+@pytest.mark.parametrize("name", ["OPENROUTER_API_KEY", "OPENROUTER_APIKEY"])
+def test_openrouter_settings_from_env(clean_env: pytest.MonkeyPatch, name: str) -> None:
+    clean_env.setenv(name, "sk-or-secret")
+    clean_env.setenv("OPENROUTER_MODEL", "vendor/model")
+    clean_env.setenv("LLM_TIMEOUT_SECONDS", "5.5")
+    s = Settings(api_key="k", signing_secret="s", _env_file=None)
+    assert s.openrouter_api_key is not None
+    assert s.openrouter_api_key.get_secret_value() == "sk-or-secret"
+    assert "sk-or-secret" not in repr(s)
+    assert s.openrouter_model == "vendor/model"
+    assert s.llm_timeout_seconds == 5.5
+
+
+def test_empty_openrouter_key_means_disabled(clean_env: pytest.MonkeyPatch) -> None:
+    clean_env.setenv("OPENROUTER_API_KEY", " ")
+    assert Settings(api_key="k", signing_secret="s", _env_file=None).openrouter_api_key is None
+
+
+def test_llm_timeout_must_be_positive(clean_env: pytest.MonkeyPatch) -> None:
+    with pytest.raises(ValidationError):
+        Settings(api_key="k", signing_secret="s", llm_timeout_seconds=0, _env_file=None)
 
 
 def test_secrets_are_not_shown_in_repr(clean_env: pytest.MonkeyPatch) -> None:

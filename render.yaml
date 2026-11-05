@@ -14,6 +14,8 @@ services:
         generateValue: true
       - key: ALLOWED_ORIGINS
         sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
       - key: MAX_CONCURRENT_JOBS
         value: "1"
       - key: MAX_QUEUE

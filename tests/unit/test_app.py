@@ -173,7 +173,10 @@ def test_openapi_documents_api_key(client: TestClient) -> None:
         "/v1/jobs",
         "/v1/jobs/{job_id}",
         "/v1/jobs/{job_id}/file",
+        "/v1/lyrics/pptx",
     }
+    lyrics_op = spec["paths"]["/v1/lyrics/pptx"]["post"]
+    assert lyrics_op["security"] == [{"APIKeyHeader": []}]
     file_op = spec["paths"]["/v1/jobs/{job_id}/file"]["get"]
     assert "security" not in file_op  # signed URL, no API key
 

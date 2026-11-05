@@ -4,6 +4,8 @@ from typing import Annotated
 from pydantic import AfterValidator, BaseModel, Field, StringConstraints
 
 VIDEO_ID_PATTERN = r"^[A-Za-z0-9_-]{11}$"
+HEX_COLOR_PATTERN = r"^#?[0-9A-Fa-f]{6}$"
+MAX_LYRICS_HTML_CHARS = 500_000
 
 VideoId = Annotated[str, StringConstraints(pattern=VIDEO_ID_PATTERN)]
 
@@ -90,3 +92,13 @@ class JobOut(BaseModel):
     filename: str | None = None
     size_bytes: int | None = None
     expires_at: float | None = None
+
+
+class LyricsRequest(BaseModel):
+    # Lyrics HTML the frontend scraped from Letras: the lyrics container is
+    # enough, but a whole page works too.
+    html: Annotated[str, Field(min_length=1, max_length=MAX_LYRICS_HTML_CHARS)]
+    # Overrides the song title found in the HTML (used for the file name).
+    title: Annotated[str, Field(max_length=200)] | None = None
+    # Text color as RRGGBB hex, with or without "#".
+    font_color: Annotated[str, StringConstraints(pattern=HEX_COLOR_PATTERN)] = "000000"

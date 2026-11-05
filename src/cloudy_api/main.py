@@ -14,9 +14,10 @@ from scalar_fastapi import get_scalar_api_reference
 from yt_dlp.version import __version__ as YT_DLP_VERSION
 
 from .config import JS_RUNTIME_EXECUTABLES, Settings, get_settings
-from .routers import jobs, videos
+from .routers import jobs, lyrics, videos
 from .services.downloader import Downloader
 from .services.jobs import JobManager
+from .services.lyrics_arranger import LyricsArranger
 
 log = logging.getLogger("cloudy_api")
 
@@ -102,7 +103,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 def create_app(
-    settings: Settings | None = None, downloader: Downloader | None = None
+    settings: Settings | None = None,
+    downloader: Downloader | None = None,
+    arranger: LyricsArranger | None = None,
 ) -> FastAPI:
     _configure_logging()
     settings = settings or get_settings()
@@ -111,7 +114,10 @@ def create_app(
     app = FastAPI(
         title="Cloudy API",
         version="0.1.0",
-        description="On-demand YouTube downloads (MP4 720p/1080p, MP3) for the Cloudy app.",
+        description=(
+            "On-demand YouTube downloads (MP4 720p/1080p, MP3) and "
+            "lyrics-to-PowerPoint conversion for the Cloudy app."
+        ),
         lifespan=lifespan,
         docs_url=None,
         redoc_url=None,
@@ -119,6 +125,7 @@ def create_app(
     app.state.settings = settings
     app.state.downloader = downloader or Downloader(settings)
     app.state.job_manager = JobManager(settings, app.state.downloader)
+    app.state.arranger = arranger or LyricsArranger(settings)
 
     app.add_middleware(
         CORSMiddleware,
@@ -145,6 +152,7 @@ def create_app(
     app.include_router(videos.router)
     app.include_router(jobs.router)
     app.include_router(jobs.files_router)
+    app.include_router(lyrics.router)
     return app
 
 

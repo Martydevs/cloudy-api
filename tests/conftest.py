@@ -22,6 +22,7 @@ from cloudy_api.services.downloader import (  # noqa: E402
     DownloaderError,
     DownloadResult,
 )
+from cloudy_api.services.lyrics_arranger import LyricsArranger  # noqa: E402
 
 API_KEY = "test-api-key"
 SIGNING_SECRET = "test-signing-secret"
@@ -116,14 +117,38 @@ class FakeDownloader:
         )
 
 
+class FakeChain:
+    """Stands in for the OpenRouter structured-output chain: no network."""
+
+    def __init__(self) -> None:
+        # What ainvoke returns (a plan model or dict), or raises if it's an exception.
+        self.result: Any = {"slides": []}
+        self.calls: list[list[Any]] = []
+
+    async def ainvoke(self, input: list[Any]) -> Any:
+        self.calls.append(input)
+        if isinstance(self.result, BaseException):
+            raise self.result
+        return self.result
+
+
 @pytest.fixture
 def fake_downloader() -> FakeDownloader:
     return FakeDownloader()
 
 
 @pytest.fixture
-def app(settings: Settings, fake_downloader: FakeDownloader) -> FastAPI:
-    return create_app(settings, downloader=fake_downloader)  # type: ignore[arg-type]
+def fake_chain() -> FakeChain:
+    return FakeChain()
+
+
+@pytest.fixture
+def app(settings: Settings, fake_downloader: FakeDownloader, fake_chain: FakeChain) -> FastAPI:
+    return create_app(
+        settings,
+        downloader=fake_downloader,  # type: ignore[arg-type]
+        arranger=LyricsArranger(settings, chain=fake_chain),
+    )
 
 
 @pytest.fixture

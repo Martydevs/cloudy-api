@@ -1,7 +1,7 @@
 # Cloudy API
 
-On-demand YouTube download service (MP4 720p, MP4 1080p, MP3) for the Cloudy
-Nuxt app on Vercel. Built with FastAPI + [yt-dlp](https://github.com/yt-dlp/yt-dlp),
+On-demand YouTube download service (MP4 720p, MP4 1080p, MP3) and a
+lyrics-to-PowerPoint converter for the Cloudy Nuxt app on Vercel. Built with FastAPI + [yt-dlp](https://github.com/yt-dlp/yt-dlp),
 deployed as a Docker web service on Render Free.
 
 > Downloading from YouTube conflicts with YouTube's Terms of Service. Running
@@ -35,6 +35,7 @@ All `/v1/*` routes need the `X-API-Key` header, except the signed file route.
 | GET | `/v1/jobs/{job_id}` | `status` (`queued\|running\|zipping\|done\|failed\|expired`), `progress`, `items[]`, and once done `download_url`, `filename`, `size_bytes`, `expires_at`. |
 | GET | `/v1/jobs/{job_id}/file?exp=…&sig=…` | Streams the file as an attachment. Signature-verified, no API key. `403` bad/expired link, `410` file expired. |
 | DELETE | `/v1/jobs/{job_id}` | Cancel / clean up early. `204`. |
+| POST | `/v1/lyrics/pptx` | `{html, title?, font_color?}` → the `.pptx` itself (synchronous). See [Lyrics to PowerPoint](#lyrics-to-powerpoint). |
 
 Behaviour:
 
@@ -67,6 +68,10 @@ Copy `.env.example` to `.env`.
 | `FILE_TTL_MINUTES` | `30` | Files deleted after this; the record answers `expired` for another TTL. |
 | `SIGNED_URL_TTL_SECONDS` | `600` | |
 | `PROBE_CONCURRENCY` | `3` | Parallel metadata probes on job creation. Lower to `1` if Render runs out of memory. |
+| `OPENROUTER_API_KEY` | — | Enables the LLM slide arrangement (`OPENROUTER_APIKEY` also works). Unset → fallback grouping. |
+| `OPENROUTER_MODEL` | `openai/gpt-4o-mini` | Any OpenRouter model that supports tool calling. |
+| `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | |
+| `LLM_TIMEOUT_SECONDS` | `30` | Per LLM request; on timeout the fallback grouping is used. |
 | `WORK_DIR` | `/tmp/cloudy` | |
 | `PUBLIC_BASE_URL` | `RENDER_EXTERNAL_URL` | Base for `download_url`; falls back to the request URL. |
 | `YTDLP_COOKIES_FILE` | — | Optional cookies.txt for bot checks. |
@@ -120,15 +125,66 @@ bun run test            # uv run pytest: unit suite + coverage gate (fail_under 
 bun run coverage:html   # same, plus an HTML report in htmlcov/
 ```
 
-- Unit tests live in `tests/unit/` and never touch the network, YouTube, ffmpeg or
-  any JS runtime. `tests/conftest.py` provides a `FakeDownloader` (wired in via
-  `create_app(settings, downloader=...)`), and `test_downloader.py` uses a fake
+- Unit tests live in `tests/unit/` and never touch the network, YouTube, ffmpeg,
+  any JS runtime or OpenRouter. `tests/conftest.py` provides a `FakeDownloader` (wired
+  in via `create_app(settings, downloader=...)`), a `FakeChain` standing in for the
+  LLM (`LyricsArranger(settings, chain=...)`), and `test_downloader.py` uses a fake
   `YoutubeDL` through the `ydl_factory` argument.
 - Every test gets its own `tmp_path` as `WORK_DIR`; clocks and the cleanup sleep
   are injected, so no test waits on real time.
 - Coverage is line + branch, configured in `pyproject.toml`. The run fails below 90%.
 - CI (`.github/workflows/ci.yml`) runs `uv sync --locked` and `uv run pytest` on every
   push and PR and uploads `coverage.xml`.
+
+## Lyrics to PowerPoint
+
+`POST /v1/lyrics/pptx` turns the lyrics HTML scraped from a Letras.com song page
+into a presentation.
+
+```bash
+curl -H "X-API-Key: change-me" -H 'content-type: application/json'   -d '{"html": "<div class=\"lyric-original\"><p>Line 1<br>Line 2</p><p>Line 3</p></div>", "title": "My Song"}'   -OJ http://localhost:8000/v1/lyrics/pptx
+```
+
+Request body (JSON):
+
+| Field | | |
+|---|---|---|
+| `html` | required, ≤ 500,000 chars | The lyrics container, a whole Letras page, or plain text. |
+| `title` | optional, ≤ 200 chars | Names the file and the document. Defaults to the page's `<h1>`, then `lyrics`. |
+| `font_color` | optional, `RRGGBB` or `#RRGGBB` | Text color. Default `000000`. |
+
+Response: `200` with the `.pptx` bytes (`Content-Type:
+application/vnd.openxmlformats-officedocument.presentationml.presentation`,
+`Content-Disposition: attachment; filename="…"; filename*=UTF-8''…`) plus:
+
+- `X-Slide-Count`: number of slides.
+- `X-Lyrics-Arranged-By`: `llm` or `fallback` (see below).
+
+Errors: `401 unauthorized`; `422 {"detail": {"code": "no_lyrics" | "lyrics_too_long", …}}`
+when the HTML has no lyrics or more than 300 lines; FastAPI's standard `422` list for
+a malformed body.
+
+How it works:
+
+1. **Parse** (`services/lyrics_parser.py`, beautifulsoup4): finds `.lyric-original`
+   (or `.cnt-letra`, `.lyric`, else the whole document), turns `<br>` into line
+   breaks and each `<p>` / blank-line run into a stanza.
+2. **Arrange** (`services/lyrics_arranger.py`, LangChain `ChatOpenAI` on OpenRouter):
+   the model receives numbered lines and returns slides as inclusive line ranges, two
+   paragraphs per slide at most. It never writes text: the ranges are validated (every
+   line exactly once, in order, size limits) and mapped back to the original lines.
+   If there's no `OPENROUTER_API_KEY`, the call fails or times out, or the plan is
+   invalid, the service uses a deterministic grouping instead (stanzas paired, stanzas
+   over 6 lines split) and reports `X-Lyrics-Arranged-By: fallback`. A request never
+   fails because of the LLM.
+3. **Render** (`services/pptx_builder.py`, python-pptx): 16:9, one slide per group,
+   two centered paragraphs at the top of the slide in Arial (40 pt, shrinking to
+   24 pt for long slides). The text box and slide background have no fill. Open it in
+   PowerPoint and the slide shows white; the "transparent" part matters for tools that
+   import the text over a background (or when exporting with transparency).
+
+The route is synchronous (an LLM call plus a tiny file build, a few seconds at most),
+so there's no job or signed URL: the browser-facing Nuxt route receives the bytes.
 
 ## JS runtimes
 
@@ -225,6 +281,9 @@ If the Python 3.15 image breaks (missing wheels), switch the Dockerfile to
 `python:3.14-slim-trixie` and lower `.python-version` / `requires-python` to 3.14.
 
 ## Nuxt integration
+
+(YouTube; for lyrics see [Lyrics to PowerPoint](#lyrics-to-powerpoint). The API key
+must also stay on the Nuxt server there: proxy the POST and stream the bytes back.)
 
 1. A Nuxt server route (`/api/yt/*`) reads `NUXT_CLOUDY_API_URL` and
    `NUXT_CLOUDY_API_KEY` and proxies only the JSON calls (metadata, create, poll),

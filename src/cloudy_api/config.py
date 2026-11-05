@@ -63,6 +63,17 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("PUBLIC_BASE_URL", "RENDER_EXTERNAL_URL"),
     )
 
+    # Lyrics arrangement LLM, reached through OpenRouter (OpenAI-compatible API).
+    # Without a key the lyrics route still works, using the deterministic
+    # fallback grouping instead of the LLM.
+    openrouter_api_key: SecretStr | None = Field(
+        default=None,
+        validation_alias=AliasChoices("openrouter_api_key", "openrouter_apikey"),
+    )
+    openrouter_model: str = "openai/gpt-4o-mini"
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    llm_timeout_seconds: float = Field(default=30, gt=0)
+
     ytdlp_cookies_file: Path | None = None
     ytdlp_proxy: SecretStr | None = None
     # Comma-separated `runtime[:path]` entries, like yt-dlp's --js-runtimes.
@@ -89,7 +100,7 @@ class Settings(BaseSettings):
             return value.strip().rstrip("/") or None
         return value
 
-    @field_validator("ytdlp_cookies_file", "ytdlp_proxy", mode="before")
+    @field_validator("ytdlp_cookies_file", "ytdlp_proxy", "openrouter_api_key", mode="before")
     @classmethod
     def _empty_to_none(cls, value: object) -> object:
         if isinstance(value, str) and not value.strip():
