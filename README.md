@@ -2,7 +2,7 @@
 
 On-demand YouTube download service (MP4 720p, MP4 1080p, MP3) and a
 lyrics-to-PowerPoint converter for the Cloudy Nuxt app on Vercel. Built with FastAPI + [yt-dlp](https://github.com/yt-dlp/yt-dlp),
-deployed as a Docker web service on Render Free.
+deployed on Vercel through the [Container Runtime](https://vercel.com/docs/functions/runtimes/container) (beta).
 
 > Downloading from YouTube conflicts with YouTube's Terms of Service. Running
 > this service is the owner's decision and responsibility.
@@ -18,10 +18,12 @@ deployed as a Docker web service on Render Free.
   → quickjs → bun), so Node takes over automatically if deno is removed. See
   [JS runtimes](#js-runtimes).
 - Jobs are async: create → poll → the browser downloads the file directly from
-  Render through a short-lived HMAC-signed URL.
-- Render Free constraints: one instance, one worker, in-memory job store, files
-  in a temp dir with a TTL. A restart loses jobs; clients get `404` and should
-  treat that as "expired, retry".
+  this API through a short-lived HMAC-signed URL.
+- Runtime constraints: one worker per container, in-memory job store, files in a
+  temp dir with a TTL. Vercel instances are not shared or persistent, so a recycled
+  instance (or a request routed to another one) loses the job; clients get `404`
+  and should treat that as "expired, retry". See
+  [Deploying to Vercel](#deploying-to-vercel) for what this means in practice.
 
 ## API (v1)
 
@@ -67,13 +69,13 @@ Copy `.env.example` to `.env`.
 | `MAX_DURATION_SECONDS` | `1800` | |
 | `FILE_TTL_MINUTES` | `30` | Files deleted after this; the record answers `expired` for another TTL. |
 | `SIGNED_URL_TTL_SECONDS` | `600` | |
-| `PROBE_CONCURRENCY` | `3` | Parallel metadata probes on job creation. Lower to `1` if Render runs out of memory. |
+| `PROBE_CONCURRENCY` | `3` | Parallel metadata probes on job creation. Lower to `1` if the function runs out of memory. |
 | `OPENROUTER_API_KEY` | — | Enables the LLM slide arrangement (`OPENROUTER_APIKEY` also works). Unset → fallback grouping. |
 | `OPENROUTER_MODEL` | `openai/gpt-4o-mini` | Any OpenRouter model that supports tool calling. |
 | `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | |
 | `LLM_TIMEOUT_SECONDS` | `30` | Per LLM request; on timeout the fallback grouping is used. |
 | `WORK_DIR` | `/tmp/cloudy` | |
-| `PUBLIC_BASE_URL` | `RENDER_EXTERNAL_URL` | Base for `download_url`; falls back to the request URL. |
+| `PUBLIC_BASE_URL` | — | Base for `download_url`; falls back to the request URL (correct behind Vercel's proxy). Set only to pin a custom domain. |
 | `YTDLP_COOKIES_FILE` | — | Optional cookies.txt for bot checks. |
 | `YTDLP_PROXY` | — | Optional proxy URL. |
 | `YTDLP_JS_RUNTIMES` | `deno,node` | Enabled JS runtimes, comma-separated `name[:path]` (`deno`, `node`, `bun`, `quickjs`). |
@@ -252,17 +254,62 @@ YTDLP_EXTRACTOR_ARGS="youtube:player_client=default,mweb;po_token=mweb.gvs+TOKEN
 
 Leave it unset unless downloads fail. yt-dlp's defaults are tuned per release.
 
-## Deploying to Render
+## Deploying to Vercel
 
-1. New → Blueprint, point at this repo (`render.yaml`): Docker runtime, Free plan,
-   health check `/healthz`. In the service settings, set auto-deploy to
-   "After CI checks pass" so a red build never ships.
-2. Set `API_KEY` and `ALLOWED_ORIGINS`; `SIGNING_SECRET` is generated.
-3. Run the smoke test above against `https://<service>.onrender.com` for each format
-   and a 3-video batch.
+Vercel builds the root `Dockerfile` (Container Runtime, beta) and runs it as a Vercel
+Function. `vercel.json` sets `"framework": "container"` so the Dockerfile wins over
+the FastAPI auto-detection that `pyproject.toml` would otherwise trigger (the native
+Python runtime has no ffmpeg/deno/node).
 
-Free instances sleep after 15 minutes idle (≈1 min cold start). Have the Nuxt app
-call `/healthz` when the YouTube page opens to wake it up.
+1. Create a **separate Vercel project** for this API (not the Nuxt one), import the
+   repo, and keep the Framework preset on **Container**. Pushes deploy automatically;
+   PRs get preview deployments.
+2. Project → Settings → Environment Variables:
+   - `PORT=8000`. **Required.** Vercel routes to port 80 by default and the image
+     runs as non-root, so it can't bind 80. Set it here, not with `ENV PORT` in the
+     Dockerfile.
+   - `API_KEY`, `SIGNING_SECRET` (generate: `openssl rand -hex 32`),
+     `ALLOWED_ORIGINS`, and optionally `OPENROUTER_API_KEY`. Mark secrets Sensitive.
+   - The limits (`MAX_*`, `FILE_TTL_MINUTES`, …) default to the values in
+     `.env.example`; override only what you need.
+3. Image size: ffmpeg + deno + node put the image well over 250 MB, so the project
+   needs *large functions* (up to 5 GB; on by default for new projects, otherwise set
+   `VERCEL_SUPPORT_LARGE_FUNCTIONS=1`).
+4. Smoke test against the deployment URL for each format and a 3-video batch. Vercel
+   has no runtime health check like Render's `healthCheckPath`, so check `/healthz`
+   on the deployment (preview, or `vercel --prod --skip-domain`) before promoting.
+5. Point the Nuxt app's `NUXT_CLOUDY_API_URL` at the new domain, add the Nuxt origin
+   to `ALLOWED_ORIGINS`, then shut down the old Render service.
+
+Local container test:
+`docker build -t cloudy-api . && docker run --rm -p 8000:8000 --env-file .env cloudy-api`
+(or `vercel dev`, which needs Docker running).
+
+### Platform constraints to know before cutting over
+
+The app was designed around one long-lived instance. Vercel Functions differ:
+
+- **State is per instance.** Jobs (dict) and files (`/tmp`) aren't shared and don't
+  survive scale-in (5 min without production traffic, 30 s on previews; SIGTERM with
+  a 30 s grace). A `GET /v1/jobs/{id}` or signed file URL that lands on another
+  instance returns `404`. At low traffic one instance usually serves everything, but
+  it isn't guaranteed. If this bites, move job state and output files to shared
+  storage (e.g. Redis + Vercel Blob) or keep this service on a single-instance host.
+- **Duration.** A request lives at most 300 s by default (Pro: up to 800 s, 1800 s
+  in beta). Downloads run in a background task after `POST /v1/jobs` returns, and
+  Vercel doesn't document background work after the response for container
+  Functions, so a long download can be cut when the instance goes idle. Verify with a
+  20+ minute video before relying on it.
+- **Body size.** Request/response bodies are capped at 4.5 MB; streamed responses are
+  documented as exempt. The file route uses `FileResponse` (streamed), but confirm a
+  100 MB+ MP4 downloads end to end on a real deployment.
+- **Memory/CPU.** 2 GB / 1 vCPU by default (Pro: up to 4 GB / 2 vCPU). Keep
+  `MAX_CONCURRENT_JOBS=1` and `PROBE_CONCURRENCY` low.
+- **Deployment Protection.** If enabled, the browser's signed-link download and the
+  Nuxt server calls are blocked on protected URLs. Disable it for this project, or
+  send a Protection Bypass for Automation secret from the Nuxt server.
+- **Cold starts.** Scale-to-zero means the first request after idle pays the
+  container start. Have the Nuxt app call `/healthz` when the YouTube page opens.
 
 ### When downloads start failing
 
@@ -270,10 +317,11 @@ call `/healthz` when the YouTube page opens to wake it up.
    `uv lock --upgrade-package yt-dlp --upgrade-package yt-dlp-ejs` (yt-dlp-ejs must
    move with yt-dlp), commit `uv.lock`, and redeploy. The Docker build fails if the
    two don't match.
-2. "Sign in to confirm you're not a bot" (`bot_check`): Render's datacenter IPs get
-   flagged. Add a cookies file as a Render Secret File and set
-   `YTDLP_COOKIES_FILE=/etc/secrets/cookies.txt`, set `YTDLP_PROXY`, or try other
-   player clients / a PO token via `YTDLP_EXTRACTOR_ARGS`.
+2. "Sign in to confirm you're not a bot" (`bot_check`): datacenter IPs (Vercel's
+   included) get flagged. Provide a cookies file (Vercel has no secret files, so it
+   must be baked into the image or fetched at start; keep it out of Git) and set
+   `YTDLP_COOKIES_FILE`, set `YTDLP_PROXY`, or try other player clients / a PO token
+   via `YTDLP_EXTRACTOR_ARGS`.
 3. `/healthz` returning `503` means ffmpeg, yt-dlp-ejs, or every enabled JS runtime
    is missing from the image. Check `js_runtimes` and `yt_dlp_ejs_version` in the response.
 
@@ -290,5 +338,5 @@ must also stay on the Nuxt server there: proxy the POST and stream the bytes bac
    adding `X-API-Key`. The key never reaches the browser.
 2. The client polls `GET /v1/jobs/{id}` every 2–3 s and shows `progress` / `items`.
 3. When `status` is `done`, the browser navigates to `download_url`, which goes
-   straight to Render. The link expires in about 10 minutes; poll again to get a fresh one.
+   straight to this API. The link expires in about 10 minutes; poll again to get a fresh one.
 4. Treat `404` on a job as "expired, retry", and `429` as "busy, retry later".

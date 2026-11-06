@@ -13,7 +13,6 @@ def clean_env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
         "SIGNING_SECRET",
         "ALLOWED_ORIGINS",
         "PUBLIC_BASE_URL",
-        "RENDER_EXTERNAL_URL",
         "YTDLP_COOKIES_FILE",
         "YTDLP_PROXY",
         "WORK_DIR",
@@ -112,17 +111,19 @@ def test_empty_optional_values_become_none(clean_env: pytest.MonkeyPatch) -> Non
     assert s.public_base_url is None
 
 
-def test_public_base_url_falls_back_to_render_url(clean_env: pytest.MonkeyPatch) -> None:
-    clean_env.setenv("RENDER_EXTERNAL_URL", "https://cloudy-api.onrender.com/")
-    s = Settings(api_key="k", signing_secret="s", _env_file=None)
-    assert s.public_base_url == "https://cloudy-api.onrender.com"
-
-
-def test_public_base_url_takes_precedence(clean_env: pytest.MonkeyPatch) -> None:
-    clean_env.setenv("RENDER_EXTERNAL_URL", "https://cloudy-api.onrender.com")
-    clean_env.setenv("PUBLIC_BASE_URL", "https://api.example.com")
+def test_public_base_url_is_read_and_trimmed(clean_env: pytest.MonkeyPatch) -> None:
+    clean_env.setenv("PUBLIC_BASE_URL", "https://api.example.com/")
     s = Settings(api_key="k", signing_secret="s", _env_file=None)
     assert s.public_base_url == "https://api.example.com"
+
+
+def test_public_base_url_ignores_platform_url_vars(clean_env: pytest.MonkeyPatch) -> None:
+    # VERCEL_PROJECT_PRODUCTION_URL points at production even on previews, so
+    # it must not leak into signed links.
+    clean_env.setenv("VERCEL_PROJECT_PRODUCTION_URL", "cloudy-api.vercel.app")
+    clean_env.setenv("VERCEL_URL", "cloudy-api-abc.vercel.app")
+    s = Settings(api_key="k", signing_secret="s", _env_file=None)
+    assert s.public_base_url is None
 
 
 def test_origins_accept_a_list(clean_env: pytest.MonkeyPatch) -> None:

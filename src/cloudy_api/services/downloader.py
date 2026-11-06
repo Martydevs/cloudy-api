@@ -186,8 +186,8 @@ class Downloader:
     def _open(self, opts: dict[str, Any]) -> Iterator[Any]:
         """Create a YoutubeDL instance.
 
-        yt-dlp writes the cookie jar back to ``cookiefile`` on close. Render
-        secret files are read-only and probes run concurrently, so each
+        yt-dlp writes the cookie jar back to ``cookiefile`` on close. Mounted
+        secret files can be read-only and probes run concurrently, so each
         instance gets its own writable copy, deleted afterwards.
         """
         cookie_copy: str | None = None

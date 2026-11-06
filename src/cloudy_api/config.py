@@ -56,12 +56,11 @@ class Settings(BaseSettings):
     probe_concurrency: int = Field(default=3, ge=1)
 
     work_dir: Path = Path("/tmp/cloudy")
-    # Public base URL used to build signed download links. Render sets
-    # RENDER_EXTERNAL_URL automatically (e.g. https://cloudy-api.onrender.com).
-    public_base_url: str | None = Field(
-        default=None,
-        validation_alias=AliasChoices("PUBLIC_BASE_URL", "RENDER_EXTERNAL_URL"),
-    )
+    # Public base URL used to build signed download links. Optional: unset, the
+    # request's own base URL is used (correct behind Vercel's proxy because the
+    # image sets FORWARDED_ALLOW_IPS). Don't derive it from
+    # VERCEL_PROJECT_PRODUCTION_URL: it points at production even on previews.
+    public_base_url: str | None = None
 
     # Lyrics arrangement LLM, reached through OpenRouter (OpenAI-compatible API).
     # Without a key the lyrics route still works, using the deterministic

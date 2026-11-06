@@ -1,0 +1,19 @@
+# Keeps `vercel deploy` uploads small. Git deploys already skip what .gitignore lists.
+.venv
+.git
+.claude
+.agents
+.env
+.env.*
+!.env.example
+cookies.txt
+__pycache__
+*.py[oc]
+.pytest_cache
+.ruff_cache
+.coverage
+coverage.xml
+htmlcov
+tests
+docs
+node_modules
