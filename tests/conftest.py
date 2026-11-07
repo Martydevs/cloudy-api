@@ -4,6 +4,7 @@ import os
 os.environ.setdefault("API_KEY", "env-api-key")
 os.environ.setdefault("SIGNING_SECRET", "env-signing-secret")
 
+import asyncio  # noqa: E402
 import threading  # noqa: E402
 import time  # noqa: E402
 from collections.abc import Callable, Iterator  # noqa: E402
@@ -124,9 +125,13 @@ class FakeChain:
         # What ainvoke returns (a plan model or dict), or raises if it's an exception.
         self.result: Any = {"slides": []}
         self.calls: list[list[Any]] = []
+        # Seconds each call takes, to simulate a slow LLM.
+        self.delay = 0.0
 
     async def ainvoke(self, input: list[Any]) -> Any:
         self.calls.append(input)
+        if self.delay:
+            await asyncio.sleep(self.delay)
         if isinstance(self.result, BaseException):
             raise self.result
         return self.result

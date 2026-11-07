@@ -14,6 +14,7 @@ from scalar_fastapi import get_scalar_api_reference
 from yt_dlp.version import __version__ as YT_DLP_VERSION
 
 from .config import JS_RUNTIME_EXECUTABLES, Settings, get_settings
+from .middleware import BodySizeLimitMiddleware
 from .routers import jobs, lyrics, videos
 from .services.downloader import Downloader
 from .services.jobs import JobManager
@@ -134,6 +135,8 @@ def create_app(
         allow_headers=[],
         expose_headers=["Content-Disposition", "Content-Length"],
     )
+    # Added last so it runs first: oversized bodies are refused before anything else.
+    app.add_middleware(BodySizeLimitMiddleware, max_bytes=settings.max_request_bytes)
 
     @app.get("/healthz", tags=["health"])
     async def healthz() -> JSONResponse:

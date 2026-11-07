@@ -1,11 +1,13 @@
 from enum import StrEnum
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import AfterValidator, BaseModel, Field, StringConstraints
 
 VIDEO_ID_PATTERN = r"^[A-Za-z0-9_-]{11}$"
 HEX_COLOR_PATTERN = r"^#?[0-9A-Fa-f]{6}$"
 MAX_LYRICS_HTML_CHARS = 500_000
+# Hard ceiling on items per lyrics batch; MAX_LYRICS_BATCH can only go lower.
+MAX_LYRICS_BATCH_ITEMS = 20
 
 VideoId = Annotated[str, StringConstraints(pattern=VIDEO_ID_PATTERN)]
 
@@ -102,3 +104,25 @@ class LyricsRequest(BaseModel):
     title: Annotated[str, Field(max_length=200)] | None = None
     # Text color as RRGGBB hex, with or without "#".
     font_color: Annotated[str, StringConstraints(pattern=HEX_COLOR_PATTERN)] = "000000"
+
+
+class LyricsBatchRequest(BaseModel):
+    # MAX_LYRICS_BATCH (enforced in the route) is the configured limit. The schema
+    # cap stops a huge list from being validated item by item before that check.
+    items: Annotated[list[LyricsRequest], Field(min_length=1, max_length=MAX_LYRICS_BATCH_ITEMS)]
+
+
+class LyricsBatchItemOut(BaseModel):
+    # Position of the item in the request's `items`.
+    index: int
+    status: Literal["done", "failed"]
+    # The ZIP entry name; null when the item failed.
+    filename: str | None = None
+    title: str | None = None
+    arranged_by: Literal["llm", "fallback"] | None = None
+    slide_count: int | None = None
+    error: ErrorInfo | None = None
+
+
+class LyricsBatchManifest(BaseModel):
+    items: list[LyricsBatchItemOut]

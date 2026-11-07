@@ -22,6 +22,12 @@ services:
         value: "20"
       - key: MAX_BATCH
         value: "10"
+      - key: MAX_LYRICS_BATCH
+        value: "3"
+      - key: LYRICS_BATCH_DEADLINE_SECONDS
+        value: "45"
+      - key: MAX_REQUEST_BYTES
+        value: "4194304"
       - key: MAX_DURATION_SECONDS
         value: "1800"
       - key: FILE_TTL_MINUTES

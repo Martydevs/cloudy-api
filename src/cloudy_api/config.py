@@ -8,6 +8,8 @@ import yt_dlp
 from pydantic import AliasChoices, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+from .schemas import MAX_LYRICS_BATCH_ITEMS
+
 # JavaScript runtimes yt-dlp can use to solve YouTube's JS challenges, mapped to
 # the executable it looks for. When several are enabled and installed, yt-dlp
 # picks by its own fixed preference: deno > node > quickjs > bun.
@@ -48,6 +50,15 @@ class Settings(BaseSettings):
     max_concurrent_jobs: int = Field(default=1, ge=1)
     max_queue: int = Field(default=20, ge=1)
     max_batch: int = Field(default=10, ge=1)
+    # Songs per POST /v1/lyrics/pptx/batch request (processed one at a time).
+    max_lyrics_batch: int = Field(default=3, ge=1, le=MAX_LYRICS_BATCH_ITEMS)
+    # Time budget for the LLM across one lyrics batch, counted from the start of
+    # the request. Once spent, the remaining songs use the fallback grouping, so
+    # the response returns before the caller (Vercel function / proxy) times out.
+    lyrics_batch_deadline_seconds: float = Field(default=45, gt=0)
+    # Largest request body accepted, in bytes (413 above it). The default fits a
+    # full lyrics batch of MAX_LYRICS_BATCH=3 large pages; raise it with the batch.
+    max_request_bytes: int = Field(default=4 * 1024 * 1024, ge=1024)
     max_duration_seconds: int = Field(default=1800, ge=1)
     file_ttl_minutes: int = Field(default=30, ge=1)
     signed_url_ttl_seconds: int = Field(default=600, ge=1)

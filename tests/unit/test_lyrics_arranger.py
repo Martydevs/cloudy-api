@@ -227,6 +227,40 @@ async def test_arranger_without_api_key_uses_fallback(
     assert "lyrics.llm_disabled" in caplog.text
 
 
+async def test_arranger_falls_back_when_the_llm_exceeds_the_timeout(
+    settings: Settings, fake_chain: FakeChain
+) -> None:
+    fake_chain.result = GOOD_PLAN
+    fake_chain.delay = 1
+
+    arrangement = await LyricsArranger(settings, chain=fake_chain).arrange(STANZAS, timeout=0.01)
+
+    assert arrangement.arranged_by == "fallback"
+    assert arrangement.slides == fallback_plan(STANZAS)
+
+
+@pytest.mark.parametrize("timeout", [0, -5])
+async def test_arranger_skips_the_llm_without_time_left(
+    settings: Settings, fake_chain: FakeChain, timeout: float
+) -> None:
+    fake_chain.result = GOOD_PLAN
+
+    arrangement = await LyricsArranger(settings, chain=fake_chain).arrange(STANZAS, timeout=timeout)
+
+    assert arrangement.arranged_by == "fallback"
+    assert fake_chain.calls == []
+
+
+async def test_arranger_uses_the_llm_within_the_timeout(
+    settings: Settings, fake_chain: FakeChain
+) -> None:
+    fake_chain.result = GOOD_PLAN
+
+    arrangement = await LyricsArranger(settings, chain=fake_chain).arrange(STANZAS, timeout=5)
+
+    assert arrangement.arranged_by == "llm"
+
+
 # ---------------------------------------------------------------- build_chain
 def test_build_chain_needs_a_key(settings: Settings) -> None:
     assert build_chain(settings) is None

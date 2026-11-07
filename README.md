@@ -36,6 +36,7 @@ All `/v1/*` routes need the `X-API-Key` header, except the signed file route.
 | GET | `/v1/jobs/{job_id}/file?exp=…&sig=…` | Streams the file as an attachment. Signature-verified, no API key. `403` bad/expired link, `410` file expired. |
 | DELETE | `/v1/jobs/{job_id}` | Cancel / clean up early. `204`. |
 | POST | `/v1/lyrics/pptx` | `{html, title?, font_color?}` → the `.pptx` itself (synchronous). See [Lyrics to PowerPoint](#lyrics-to-powerpoint). |
+| POST | `/v1/lyrics/pptx/batch` | `{items: [1..3 × {html, title?, font_color?}]}` → a `.zip` of `.pptx` files + `manifest.json` (synchronous, sequential). See [Batch](#batch-several-songs-in-one-zip). |
 
 Behaviour:
 
@@ -64,6 +65,7 @@ Copy `.env.example` to `.env`.
 | `MAX_CONCURRENT_JOBS` | `1` | |
 | `MAX_QUEUE` | `20` | Waiting jobs before `429`. |
 | `MAX_BATCH` | `10` | |
+| `MAX_LYRICS_BATCH` | `3` | Songs per `POST /v1/lyrics/pptx/batch`; more → `422 batch_too_large`. |
 | `MAX_DURATION_SECONDS` | `1800` | |
 | `FILE_TTL_MINUTES` | `30` | Files deleted after this; the record answers `expired` for another TTL. |
 | `SIGNED_URL_TTL_SECONDS` | `600` | |
@@ -190,6 +192,40 @@ How it works:
 
 The route is synchronous (an LLM call plus a tiny file build, a few seconds at most),
 so there's no job or signed URL: the browser-facing Nuxt route receives the bytes.
+
+### Batch: several songs in one ZIP
+
+`POST /v1/lyrics/pptx/batch` takes `{"items": [...]}`, where each item has the same
+fields as the single route (`html`, `title?`, `font_color?`). It accepts 1 to
+`MAX_LYRICS_BATCH` (default 3) items. Items are converted **one at a time, in order**,
+through the same parse → arrange → render pipeline (`services/lyrics_pptx.py`).
+
+```bash
+curl -H "X-API-Key: change-me" -H 'content-type: application/json' \
+  -d '{"items": [{"html": "<p>A 1<br>A 2</p>", "title": "Song A"}, {"html": "<p>B 1</p>", "title": "Song B", "font_color": "#FFFFFF"}]}' \
+  -o lyrics.zip http://localhost:8000/v1/lyrics/pptx/batch && unzip -l lyrics.zip
+```
+
+Response: `200 application/zip` (`Content-Disposition: attachment; filename="lyrics.zip"`)
+with `X-Batch-Succeeded` and `X-Batch-Failed` counts. The ZIP holds:
+
+- One `<ASCII title>.pptx` per converted item. Repeated names get ` (2)`, ` (3)`, … suffixes;
+  the comparison ignores case.
+- `manifest.json`: `{"items": [{index, status, filename, title, arranged_by, slide_count, error}]}`,
+  in request order. `status` is `done` or `failed`. A failed item has only `index`,
+  `status` and `error: {code, message}` (`no_lyrics`, `lyrics_too_long`).
+
+Partial success is the norm. Bad items are reported in the manifest and the rest are still
+returned. Errors:
+
+- `422 {"detail": {"code": "all_items_failed", "message": …, "items": [...]}}` when no item
+  converts. `items` has the same shape as the manifest entries.
+- `422 batch_too_large` for more than `MAX_LYRICS_BATCH` items.
+- FastAPI's standard `422` list for an empty `items` or a malformed item.
+
+Timing: each item can take up to `LLM_TIMEOUT_SECONDS` (plus one retry) before it falls
+back, and Render's proxy cuts requests at about 100 s. Typical runs take a few seconds per
+song. If timeouts show up, lower `LLM_TIMEOUT_SECONDS`.
 
 ## JS runtimes
 

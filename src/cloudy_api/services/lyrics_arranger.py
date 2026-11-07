@@ -11,6 +11,7 @@ failure, falls back to a deterministic grouping, so a request still produces
 a presentation and the lyrics are never altered.
 """
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
@@ -138,14 +139,24 @@ class LyricsArranger:
         if self._chain is None:
             log.warning("lyrics.llm_disabled OPENROUTER_API_KEY is not set; using fallback grouping")
 
-    async def arrange(self, stanzas: list[Paragraph]) -> Arrangement:
+    async def arrange(self, stanzas: list[Paragraph], *, timeout: float | None = None) -> Arrangement:
+        """Arrange ``stanzas`` into slides. Never raises.
+
+        ``timeout`` caps the whole LLM call, retries included (``None``: only the
+        client's own per-attempt timeout applies). When it is ``<= 0`` the LLM is
+        skipped and the fallback grouping is used straight away.
+        """
         if self._chain is None:
+            return Arrangement(fallback_plan(stanzas), "fallback")
+        if timeout is not None and timeout <= 0:
+            log.info("lyrics.llm_skipped no time left; using fallback grouping")
             return Arrangement(fallback_plan(stanzas), "fallback")
 
         _, numbered = number_lines(stanzas)
         messages: list[BaseMessage] = [HumanMessage(numbered)]
         try:
-            raw = await self._chain.ainvoke(messages)
+            async with asyncio.timeout(timeout):
+                raw = await self._chain.ainvoke(messages)
             slides = resolve_plan(LLMPlan.model_validate(raw), stanzas)
         except Exception as exc:  # LLM, network and parsing errors alike must not fail the request
             log.warning("lyrics.llm_failed %s: %s; using fallback grouping", type(exc).__name__, exc)
