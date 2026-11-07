@@ -70,7 +70,8 @@ class Settings(BaseSettings):
         default=None,
         validation_alias=AliasChoices("openrouter_api_key", "openrouter_apikey"),
     )
-    openrouter_model: str = "openai/gpt-4o-mini"
+    # An OpenRouter preset that holds the model and the system prompt.
+    openrouter_model: str = "@preset/lyrics-generator"
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     llm_timeout_seconds: float = Field(default=30, gt=0)
 

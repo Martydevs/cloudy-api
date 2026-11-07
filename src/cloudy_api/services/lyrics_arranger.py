@@ -1,5 +1,9 @@
 """Group lyrics into slides, using an LLM (via OpenRouter) to pick the breaks.
 
+The instructions live in an OpenRouter preset (``OPENROUTER_MODEL``, by default
+``@preset/lyrics-generator``), so no system prompt is sent from here: the request
+carries only the numbered lyrics.
+
 The model never writes lyrics. It only sees numbered lines and answers with
 inclusive line ranges, which this module validates and turns back into the
 original text. A plan that skips, repeats or reorders lines, or any LLM
@@ -11,7 +15,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
-from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
+from langchain_core.messages import BaseMessage, HumanMessage
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
@@ -26,26 +30,6 @@ MAX_SLIDE_LINES = PARAGRAPHS_PER_SLIDE * MAX_PARAGRAPH_LINES
 
 Paragraph = list[str]
 Slide = list[Paragraph]
-
-SYSTEM_PROMPT = f"""\
-You arrange song lyrics into presentation slides for a church multimedia team.
-The lyrics arrive as numbered lines; blank lines mark the original stanzas.
-
-Answer with the slides in order. Each slide has 1 to {PARAGRAPHS_PER_SLIDE} \
-paragraphs, and each paragraph is an inclusive range of consecutive line numbers \
-(start, end) covering exactly {MAX_PARAGRAPH_LINES} line, so start equals end.
-
-Hard rules:
-- Cover every line exactly once, in the original order: no gaps, overlaps or reordering.
-- Never write, edit or translate lyrics. You only choose the ranges.
-- Every paragraph is a single line, and a slide holds at most {MAX_SLIDE_LINES} lines.
-- A slide never mixes lines from two stanzas: every stanza starts on a new slide.
-
-Guidelines:
-- Fill each slide with {PARAGRAPHS_PER_SLIDE} consecutive lines of the same stanza.
-- A slide with a single line only appears at the end of a stanza with an odd \
-number of lines.
-"""
 
 
 class ParagraphRange(BaseModel):
@@ -141,7 +125,6 @@ def build_chain(settings: Settings) -> PlanChain | None:
         model=settings.openrouter_model,
         api_key=settings.openrouter_api_key,
         base_url=settings.openrouter_base_url,
-        temperature=0,
         timeout=settings.llm_timeout_seconds,
         max_retries=1,
         default_headers={"X-Title": "Cloudy API"},
@@ -155,16 +138,12 @@ class LyricsArranger:
         if self._chain is None:
             log.warning("lyrics.llm_disabled OPENROUTER_API_KEY is not set; using fallback grouping")
 
-    async def arrange(self, stanzas: list[Paragraph], title: str | None = None) -> Arrangement:
+    async def arrange(self, stanzas: list[Paragraph]) -> Arrangement:
         if self._chain is None:
             return Arrangement(fallback_plan(stanzas), "fallback")
 
         _, numbered = number_lines(stanzas)
-        header = f"Song: {title}\n\n" if title else ""
-        messages: list[BaseMessage] = [
-            SystemMessage(SYSTEM_PROMPT),
-            HumanMessage(f"{header}Lyrics:\n\n{numbered}"),
-        ]
+        messages: list[BaseMessage] = [HumanMessage(numbered)]
         try:
             raw = await self._chain.ainvoke(messages)
             slides = resolve_plan(LLMPlan.model_validate(raw), stanzas)

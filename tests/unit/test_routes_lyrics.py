@@ -51,8 +51,9 @@ def test_returns_a_pptx_arranged_by_the_llm(client: TestClient, fake_chain: Fake
         ["Cinco", "Seis"],
         ["Siete", "Ocho"],
     ]
-    # The model saw the numbered lyrics plus the title found in the HTML.
-    assert "Song: De Buenas Part" in fake_chain.calls[0][1].content
+    # The model saw only the numbered lyrics; the preset carries the instructions.
+    (messages,) = fake_chain.calls
+    assert [m.content for m in messages] == ["1: Uno\n2: Dos\n3: Tres\n4: Cuatro\n\n5: Cinco\n6: Seis\n\n7: Siete\n8: Ocho"]
 
 
 def test_falls_back_when_the_llm_fails(client: TestClient, fake_chain: FakeChain) -> None:

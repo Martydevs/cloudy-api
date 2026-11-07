@@ -4,7 +4,7 @@ from typing import Any
 
 import pytest
 from conftest import FakeChain
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage
 from langchain_openai import ChatOpenAI
 
 from cloudy_api.config import Settings
@@ -160,7 +160,7 @@ async def test_arranger_uses_the_llm_plan(settings: Settings, fake_chain: FakeCh
     fake_chain.result = plan(
         [(1, 1)], [(2, 2), (3, 3)], [(4, 4)], [(5, 5), (6, 6)], [(7, 7), (8, 8)], [(9, 9)]
     )
-    arrangement = await LyricsArranger(settings, chain=fake_chain).arrange(STANZAS, "My Song")
+    arrangement = await LyricsArranger(settings, chain=fake_chain).arrange(STANZAS)
 
     assert arrangement.arranged_by == "llm"
     assert arrangement.slides == [
@@ -173,20 +173,17 @@ async def test_arranger_uses_the_llm_plan(settings: Settings, fake_chain: FakeCh
     ]
 
 
-async def test_arranger_sends_numbered_lines_and_title(
+async def test_arranger_sends_only_the_numbered_lines(
     settings: Settings, fake_chain: FakeChain
 ) -> None:
+    # The OpenRouter preset holds the instructions: no system prompt, no extra context.
     fake_chain.result = LLMPlan.model_validate(GOOD_PLAN)  # a model works too
-    arranger = LyricsArranger(settings, chain=fake_chain)
-    await arranger.arrange(STANZAS, "My Song")
-    await arranger.arrange(STANZAS)
+    await LyricsArranger(settings, chain=fake_chain).arrange(STANZAS)
 
-    system, human = fake_chain.calls[0]
-    assert isinstance(system, SystemMessage)
+    (messages,) = fake_chain.calls
+    (human,) = messages
     assert isinstance(human, HumanMessage)
-    assert human.content.startswith("Song: My Song\n\nLyrics:\n\n1: a1\n2: a2")
-    assert "9: c3" in human.content
-    assert fake_chain.calls[1][1].content.startswith("Lyrics:\n\n1: a1")
+    assert human.content == number_lines(STANZAS)[1]
 
 
 @pytest.mark.parametrize(
@@ -261,4 +258,4 @@ def test_build_chain_targets_openrouter(
     assert model.openai_api_key is not None
     assert model.openai_api_key.get_secret_value() == "sk-or-test"
     assert model.request_timeout == 12
-    assert model.temperature == 0
+    assert model.temperature is None  # sampling settings come from the OpenRouter preset

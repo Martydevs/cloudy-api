@@ -69,7 +69,7 @@ Copy `.env.example` to `.env`.
 | `SIGNED_URL_TTL_SECONDS` | `600` | |
 | `PROBE_CONCURRENCY` | `3` | Parallel metadata probes on job creation. Lower to `1` if Render runs out of memory. |
 | `OPENROUTER_API_KEY` | — | Enables the LLM slide arrangement (`OPENROUTER_APIKEY` also works). Unset → fallback grouping. |
-| `OPENROUTER_MODEL` | `openai/gpt-4o-mini` | Any OpenRouter model that supports tool calling. |
+| `OPENROUTER_MODEL` | `@preset/lyrics-generator` | OpenRouter preset (or model) that supports tool calling. The preset holds the system prompt; the API sends only the numbered lyrics. |
 | `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | |
 | `LLM_TIMEOUT_SECONDS` | `30` | Per LLM request; on timeout the fallback grouping is used. |
 | `WORK_DIR` | `/tmp/cloudy` | |
@@ -171,8 +171,10 @@ How it works:
    breaks and each `<p>` / blank-line run into a stanza.
 2. **Arrange** (`services/lyrics_arranger.py`, LangChain `ChatOpenAI` on OpenRouter):
    **2 lines per slide**, each line its own paragraph, and every stanza starts on a new
-   slide (a stanza with an odd number of lines ends on a 1-line slide). The model
-   receives numbered lines and returns slides as inclusive line ranges. It never writes
+   slide (a stanza with an odd number of lines ends on a 1-line slide). The instructions
+   live in the OpenRouter preset `@preset/lyrics-generator` (`OPENROUTER_MODEL`); the
+   request carries no system prompt or title, only the numbered lyrics (blank lines
+   between stanzas). The model returns slides as inclusive line ranges. It never writes
    text: the ranges are validated (every line exactly once, in order, one line per
    paragraph, two per slide, no slide spanning two stanzas) and mapped back to the
    original lines. If there's no `OPENROUTER_API_KEY`, the call fails or times out, or

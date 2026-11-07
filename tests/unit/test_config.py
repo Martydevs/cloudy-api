@@ -48,7 +48,7 @@ def test_defaults(clean_env: pytest.MonkeyPatch) -> None:
     assert s.ytdlp_js_runtimes == {"deno": None, "node": None}
     assert s.ytdlp_extractor_args == {}
     assert s.openrouter_api_key is None
-    assert s.openrouter_model == "openai/gpt-4o-mini"
+    assert s.openrouter_model == "@preset/lyrics-generator"
     assert s.openrouter_base_url == "https://openrouter.ai/api/v1"
     assert s.llm_timeout_seconds == 30
 

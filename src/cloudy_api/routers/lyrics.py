@@ -37,7 +37,7 @@ async def create_lyrics_pptx(body: LyricsRequest, arranger: ArrangerDep) -> Resp
         ) from exc
 
     title = body.title or parsed.title
-    arrangement = await arranger.arrange(parsed.stanzas, title)
+    arrangement = await arranger.arrange(parsed.stanzas)
     content = await asyncio.to_thread(
         build_presentation,
         arrangement.slides,
