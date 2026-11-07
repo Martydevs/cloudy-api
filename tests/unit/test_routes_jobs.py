@@ -253,13 +253,13 @@ def test_download_url_uses_public_base_url(
     make_settings: Callable[..., Settings], fake_downloader: FakeDownloader
 ) -> None:
     app = create_app(
-        make_settings(PUBLIC_BASE_URL="https://api.example.com"),
+        make_settings(PUBLIC_BASE_URL="https://cloudy.onrender.com"),
         downloader=fake_downloader,  # type: ignore[arg-type]
     )
     with TestClient(app) as client:
         body = wait_for_job(client, create(client, [A])["job_id"])
     assert body["download_url"].startswith(
-        f"https://api.example.com/v1/jobs/{body['job_id']}/file?exp="
+        f"https://cloudy.onrender.com/v1/jobs/{body['job_id']}/file?exp="
     )
 
 

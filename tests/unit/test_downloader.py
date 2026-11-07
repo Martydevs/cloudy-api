@@ -182,7 +182,7 @@ def test_cookie_file_is_copied_per_instance(
 ) -> None:
     cookies = tmp_path / "cookies.txt"
     cookies.write_text("# Netscape HTTP Cookie File\n")
-    cookies.chmod(0o444)  # like a read-only mounted secret file
+    cookies.chmod(0o444)  # like a Render secret file
     downloader = make_downloader(ytdlp_cookies_file=cookies)
 
     downloader.probe(VIDEO_ID)

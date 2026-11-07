@@ -40,8 +40,8 @@ COPY --from=deno /deno /usr/local/bin/deno
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
 
 # HOME/XDG_CACHE_HOME/DENO_DIR give the non-root user writable caches. yt-dlp
-# caches player JS and solved challenges under $XDG_CACHE_HOME/yt-dlp (wiped when
-# an instance is recycled, which is fine).
+# caches player JS and solved challenges under $XDG_CACHE_HOME/yt-dlp (wiped on
+# Render restarts, which is fine).
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
     UV_PYTHON_DOWNLOADS=never \
@@ -77,7 +77,5 @@ COPY --chown=app:app scripts/check_deps.py /app/scripts/check_deps.py
 RUN python /app/scripts/check_deps.py --runtimes deno,node
 
 EXPOSE 8000
-# Vercel routes to port 80 unless the PORT env var is set in the *project settings*
-# (not here). The app runs as non-root and can't bind 80, so set PORT=8000 there.
-# Shell form so ${PORT} expands; exec so SIGTERM (30 s grace on Vercel) reaches uvicorn.
+# Shell form so ${PORT} (set by Render) expands; exec so SIGTERM reaches uvicorn.
 CMD exec fastapi run src/cloudy_api/main.py --host 0.0.0.0 --port ${PORT:-8000} --workers 1

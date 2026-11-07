@@ -1,9 +1,8 @@
 """In-memory job store and background runner.
 
-Jobs live in a dict and files in a temp dir with a TTL, both local to one
-container instance (Vercel's container runtime gives no shared or persistent
-state). A lost job (instance recycled, request landed on another instance) is
-a 404 that the Nuxt app treats as "expired, retry".
+Render Free runs a single instance with a wiped disk on restart, so jobs live
+in a dict and files in a temp dir with a TTL. A lost job (restart) is a 404
+that the Nuxt app treats as "expired, retry".
 """
 
 import asyncio

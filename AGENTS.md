@@ -9,4 +9,4 @@ Cloudy app is a webapp to automating and improving workflows for a christian mul
 Command: `bun run dev`
 
 ### Notes
-This project is deployed on Vercel through the Container Runtime (beta): the root `Dockerfile` is built by Vercel (`vercel.json` sets `"framework": "container"`) and runs as a Vercel Function. It downloads videos on demand for a Nuxt Fullstack Webapp, also hosted on Vercel. `PORT=8000` must be set in the Vercel project settings. See README "Deploying to Vercel" for the platform constraints (stateless instances, 4.5 MB body limit, duration limits).
+This project is intended to be deployed as python webservice on `Render.com` to download videos on demand by a Nuxt Fullstack Webapp hosted on Vercel.
