@@ -5,8 +5,8 @@ services:
     plan: free
     dockerfilePath: ./Dockerfile
     healthCheckPath: /healthz
-    # Set Auto-Deploy to "After CI checks pass" in the dashboard.
-    autoDeploy: true
+    # Deploy only when the branch's CI checks (.github/workflows/ci.yml) pass.
+    autoDeployTrigger: checksPass
     envVars:
       - key: API_KEY
         sync: false
