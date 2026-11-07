@@ -170,16 +170,19 @@ How it works:
    (or `.cnt-letra`, `.lyric`, else the whole document), turns `<br>` into line
    breaks and each `<p>` / blank-line run into a stanza.
 2. **Arrange** (`services/lyrics_arranger.py`, LangChain `ChatOpenAI` on OpenRouter):
-   the model receives numbered lines and returns slides as inclusive line ranges, two
-   paragraphs per slide at most. It never writes text: the ranges are validated (every
-   line exactly once, in order, size limits) and mapped back to the original lines.
-   If there's no `OPENROUTER_API_KEY`, the call fails or times out, or the plan is
-   invalid, the service uses a deterministic grouping instead (stanzas paired, stanzas
-   over 6 lines split) and reports `X-Lyrics-Arranged-By: fallback`. A request never
+   **2 lines per slide**, each line its own paragraph, and every stanza starts on a new
+   slide (a stanza with an odd number of lines ends on a 1-line slide). The model
+   receives numbered lines and returns slides as inclusive line ranges. It never writes
+   text: the ranges are validated (every line exactly once, in order, one line per
+   paragraph, two per slide, no slide spanning two stanzas) and mapped back to the
+   original lines. If there's no `OPENROUTER_API_KEY`, the call fails or times out, or
+   the plan is invalid, the service uses a deterministic grouping instead (each stanza
+   chunked in twos) and reports `X-Lyrics-Arranged-By: fallback`. A request never
    fails because of the LLM.
 3. **Render** (`services/pptx_builder.py`, python-pptx): 16:9, one slide per group,
-   two centered paragraphs at the top of the slide in Arial (40 pt, shrinking to
-   24 pt for long slides). The text box and slide background have no fill. Open it in
+   in a compact **top-center box** (10.5 × 2.6 in, horizontally centered, 0.4 in from
+   the top edge) with centered Arial text at 40 pt, shrinking toward 24 pt only when a
+   line is long enough to wrap. The text box and slide background have no fill. Open it in
    PowerPoint and the slide shows white; the "transparent" part matters for tools that
    import the text over a background (or when exporting with transparency).
 

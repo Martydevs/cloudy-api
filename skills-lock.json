@@ -17,6 +17,12 @@
       "sourceType": "autoskills-registry",
       "computedHash": "879e20a1640cb1a979adca769e196295466b1810c848673ca939c3fe7c06f5f5"
     },
+    "python-backend": {
+      "source": "jiatastic/open-python-skills",
+      "sourceType": "github",
+      "skillPath": "skills/fastapi-design/SKILL.md",
+      "computedHash": "3e05cfe0d22005cd76126b0a7d67e1b33da8a08da99d863133a37abfd47365a0"
+    },
     "python-executor": {
       "source": "inferen-sh/skills",
       "sourceType": "autoskills-registry",

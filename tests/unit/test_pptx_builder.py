@@ -17,8 +17,8 @@ from cloudy_api.services.pptx_builder import (
 )
 
 SLIDES = [
-    [["Line one", "Line two"], ["Line three", "Line four"]],
-    [["Solo stanza"]],
+    [["Line one"], ["Line two"]],
+    [["Solo line"]],
 ]
 
 
@@ -31,12 +31,14 @@ def test_one_slide_per_group_with_original_text() -> None:
 
     assert len(prs.slides) == 2
     first = prs.slides[0].shapes[0].text_frame
-    assert [p.text.split("\x0b") for p in first.paragraphs] == [
-        ["Line one", "Line two"],
-        ["Line three", "Line four"],
-    ]
-    assert prs.slides[1].shapes[0].text_frame.text == "Solo stanza"
+    assert [p.text for p in first.paragraphs] == ["Line one", "Line two"]
+    assert prs.slides[1].shapes[0].text_frame.text == "Solo line"
     assert prs.core_properties.title == "My Song"
+
+
+def test_multi_line_paragraphs_still_render_with_line_breaks() -> None:
+    frame = load(build_presentation([[["a", "b"], ["c"]]])).slides[0].shapes[0].text_frame
+    assert [p.text.split("\x0b") for p in frame.paragraphs] == [["a", "b"], ["c"]]
 
 
 def test_widescreen_slides() -> None:
@@ -53,8 +55,6 @@ def test_text_is_top_centered_basic_and_transparent() -> None:
     frame = box.text_frame
 
     assert frame.vertical_anchor == MSO_ANCHOR.TOP
-    assert box.top < SLIDE_HEIGHT * 0.1
-    assert box.left + box.width / 2 == pytest.approx(SLIDE_WIDTH / 2, abs=2)  # centered box
     for paragraph in frame.paragraphs:
         assert paragraph.alignment == PP_ALIGN.CENTER
         for run in paragraph.runs:
@@ -70,6 +70,17 @@ def test_text_is_top_centered_basic_and_transparent() -> None:
     assert "<a:noFill/>" in slide._element.xml.split("</p:bg>")[0]
 
 
+def test_box_is_compact_and_pinned_top_center() -> None:
+    prs = load(build_presentation(SLIDES))
+    for slide in prs.slides:
+        (box,) = slide.shapes
+        assert box.left + box.width / 2 == pytest.approx(SLIDE_WIDTH / 2, abs=2)  # centered
+        assert box.left > 0
+        assert box.width < SLIDE_WIDTH * 0.85  # not edge to edge
+        assert box.top < SLIDE_HEIGHT * 0.1  # near the top edge
+        assert box.height < SLIDE_HEIGHT * 0.4  # compact, not a near-full-slide box
+
+
 def test_font_color() -> None:
     default = load(build_presentation(SLIDES)).slides[0].shapes[0].text_frame.paragraphs[0].runs[0]
     white = load(build_presentation(SLIDES, font_color="ffffff")).slides[0]
@@ -83,15 +94,17 @@ def test_paragraphs_are_spaced_apart_but_not_the_last() -> None:
     assert paragraphs[1].space_after is None
 
 
-def test_font_size_shrinks_for_long_or_wrapping_slides() -> None:
-    short = [["one", "two"]]
-    eight_lines = [["x" * 20] * 4, ["y" * 20] * 4]
-    twelve_lines = [["x" * 20] * 6, ["y" * 20] * 6]
-    very_long_lines = [["z" * 120] * 6, ["z" * 120] * 6]
+def test_font_size_shrinks_only_when_lines_wrap() -> None:
+    short = [["Jay Jay"], ["Musiko"]]
+    typical = [["A veces despierto con ganas"], ["Y seguir durmiendo, vaya"]]  # < 36 chars
+    one_wraps = [["x" * 50], ["y" * 20]]
+    both_wrap = [["x" * 50], ["y" * 50]]
+    very_long_lines = [["z" * 200], ["z" * 200]]
 
     assert font_size_for(short) == MAX_FONT_PT
-    assert MIN_FONT_PT < font_size_for(twelve_lines) < MAX_FONT_PT
-    assert font_size_for(eight_lines) >= font_size_for(twelve_lines)
+    assert font_size_for(typical) == MAX_FONT_PT
+    assert font_size_for(one_wraps) == MAX_FONT_PT  # three lines still fit at full size
+    assert MIN_FONT_PT < font_size_for(both_wrap) < MAX_FONT_PT
     assert font_size_for(very_long_lines) == MIN_FONT_PT
 
 

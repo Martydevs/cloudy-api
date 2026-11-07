@@ -30,11 +30,9 @@ def slide_texts(response_content: bytes) -> list[list[str]]:
 
 
 def test_returns_a_pptx_arranged_by_the_llm(client: TestClient, fake_chain: FakeChain) -> None:
+    lines = [[1, 2], [3], [4], [5, 6], [7, 8]]
     fake_chain.result = {
-        "slides": [
-            {"paragraphs": [{"start": 1, "end": 4}]},
-            {"paragraphs": [{"start": 5, "end": 6}, {"start": 7, "end": 8}]},
-        ]
+        "slides": [{"paragraphs": [{"start": n, "end": n} for n in slide]} for slide in lines]
     }
 
     r = client.post(URL, json={"html": HTML}, headers=AUTH)
@@ -42,11 +40,17 @@ def test_returns_a_pptx_arranged_by_the_llm(client: TestClient, fake_chain: Fake
     assert r.status_code == 200
     assert r.headers["content-type"] == PPTX_MEDIA_TYPE
     assert r.headers["x-lyrics-arranged-by"] == "llm"
-    assert r.headers["x-slide-count"] == "2"
+    assert r.headers["x-slide-count"] == "5"
     assert r.headers["content-disposition"] == (
         'attachment; filename="De Buenas Part.pptx"; filename*=UTF-8\'\'De%20Buenas%20Part.pptx'
     )
-    assert slide_texts(r.content) == [["Uno|Dos|Tres|Cuatro"], ["Cinco|Seis", "Siete|Ocho"]]
+    assert slide_texts(r.content) == [
+        ["Uno", "Dos"],
+        ["Tres"],
+        ["Cuatro"],
+        ["Cinco", "Seis"],
+        ["Siete", "Ocho"],
+    ]
     # The model saw the numbered lyrics plus the title found in the HTML.
     assert "Song: De Buenas Part" in fake_chain.calls[0][1].content
 
@@ -58,8 +62,29 @@ def test_falls_back_when_the_llm_fails(client: TestClient, fake_chain: FakeChain
 
     assert r.status_code == 200
     assert r.headers["x-lyrics-arranged-by"] == "fallback"
-    assert r.headers["x-slide-count"] == "2"
-    assert slide_texts(r.content) == [["Uno|Dos|Tres|Cuatro", "Cinco|Seis"], ["Siete|Ocho"]]
+    assert r.headers["x-slide-count"] == "4"
+    # Two single-line paragraphs per slide; stanzas never share a slide.
+    assert slide_texts(r.content) == [
+        ["Uno", "Dos"],
+        ["Tres", "Cuatro"],
+        ["Cinco", "Seis"],
+        ["Siete", "Ocho"],
+    ]
+
+
+def test_falls_back_when_the_llm_plan_mixes_stanzas(
+    client: TestClient, fake_chain: FakeChain
+) -> None:
+    lines = [[1, 2], [3], [4, 5], [6, 7], [8]]  # 4+5 and 6+7 cross stanza breaks
+    fake_chain.result = {
+        "slides": [{"paragraphs": [{"start": n, "end": n} for n in slide]} for slide in lines]
+    }
+
+    r = client.post(URL, json={"html": HTML}, headers=AUTH)
+
+    assert r.status_code == 200
+    assert r.headers["x-lyrics-arranged-by"] == "fallback"
+    assert r.headers["x-slide-count"] == "4"
 
 
 def test_title_and_font_color_overrides(client: TestClient, fake_chain: FakeChain) -> None:

@@ -12,6 +12,7 @@ from cloudy_api.services import lyrics_arranger
 from cloudy_api.services.lyrics_arranger import (
     MAX_PARAGRAPH_LINES,
     MAX_SLIDE_LINES,
+    PARAGRAPHS_PER_SLIDE,
     LLMPlan,
     LyricsArranger,
     PlanError,
@@ -37,77 +38,116 @@ def test_number_lines() -> None:
     assert text == "1: a1\n2: a2\n3: a3\n4: a4\n\n5: b1\n6: b2\n\n7: c1\n8: c2\n9: c3"
 
 
+# A sound plan for STANZAS: two single-line paragraphs per slide, one stanza per slide.
+GOOD_PLAN = plan(
+    [(1, 1), (2, 2)], [(3, 3), (4, 4)], [(5, 5), (6, 6)], [(7, 7), (8, 8)], [(9, 9)]
+)
+GOOD_SLIDES = [
+    [["a1"], ["a2"]],
+    [["a3"], ["a4"]],
+    [["b1"], ["b2"]],
+    [["c1"], ["c2"]],
+    [["c3"]],
+]
+
+
+def test_limits_are_two_single_line_paragraphs() -> None:
+    assert MAX_PARAGRAPH_LINES == 1
+    assert MAX_SLIDE_LINES == PARAGRAPHS_PER_SLIDE == 2
+
+
 # --------------------------------------------------------------- resolve_plan
 def test_resolve_plan_returns_original_text() -> None:
-    slides = resolve_plan(LLMPlan.model_validate(plan([(1, 4), (5, 6)], [(7, 9)])), LINES)
-    assert slides == [[["a1", "a2", "a3", "a4"], ["b1", "b2"]], [["c1", "c2", "c3"]]]
+    assert resolve_plan(LLMPlan.model_validate(GOOD_PLAN), STANZAS) == GOOD_SLIDES
+
+
+def test_resolve_plan_allows_single_line_slides_inside_a_stanza() -> None:
+    # Not the ideal grouping, but sound: one line per slide stays within every limit.
+    one_per_slide = plan(*[[(n, n)] for n in range(1, 10)])
+    slides = resolve_plan(LLMPlan.model_validate(one_per_slide), STANZAS)
+    assert slides == [[[line]] for line in LINES]
 
 
 @pytest.mark.parametrize(
     "bad",
     [
-        plan([(1, 4), (6, 9)]),  # skips line 5
-        plan([(1, 4), (4, 9)]),  # overlaps line 4
-        plan([(2, 9)]),  # doesn't start at 1
-        plan([(1, 4)], [(5, 6)]),  # stops early
-        plan([(1, 4)], [(5, 10)]),  # runs past the end
-        plan([(1, 4)], [(5, 4)], [(5, 9)]),  # end before start
+        plan([(1, 1), (3, 3)]),  # skips line 2
+        plan([(1, 1), (1, 1)]),  # repeats line 1
+        plan([(2, 2)]),  # doesn't start at 1
+        plan([(1, 1), (2, 2)], [(3, 3), (4, 4)]),  # stops early
+        plan(*[[(n, n)] for n in range(1, 10)], [(10, 10)]),  # runs past the end
+        plan([(1, 1)], [(2, 1)]),  # end before start
         {"slides": []},  # empty plan
-        plan([(5, 9)], [(1, 4)]),  # reordered
+        plan([(2, 2)], [(1, 1)]),  # reordered
     ],
 )
 def test_resolve_plan_rejects_unsound_plans(bad: dict[str, Any]) -> None:
     with pytest.raises(PlanError):
-        resolve_plan(LLMPlan.model_validate(bad), LINES)
+        resolve_plan(LLMPlan.model_validate(bad), STANZAS)
 
 
-def test_resolve_plan_enforces_size_limits() -> None:
-    lines = [f"l{i}" for i in range(1, 30)]
-    too_long_paragraph = plan([(1, MAX_PARAGRAPH_LINES + 1)], [(MAX_PARAGRAPH_LINES + 2, 29)])
-    with pytest.raises(PlanError, match="paragraph longer"):
-        resolve_plan(LLMPlan.model_validate(too_long_paragraph), lines)
-
-    # Two full paragraphs sit exactly at the slide limit and are fine...
-    assert MAX_SLIDE_LINES == 2 * MAX_PARAGRAPH_LINES
-    full = 2 * MAX_PARAGRAPH_LINES
-    ok = resolve_plan(
-        LLMPlan.model_validate(plan([(1, MAX_PARAGRAPH_LINES), (MAX_PARAGRAPH_LINES + 1, full)])),
-        lines[:full],
-    )
-    assert [len(p) for p in ok[0]] == [MAX_PARAGRAPH_LINES, MAX_PARAGRAPH_LINES]
+def test_resolve_plan_rejects_multi_line_paragraphs() -> None:
+    with pytest.raises(PlanError, match="paragraph longer than 1 lines"):
+        resolve_plan(LLMPlan.model_validate(plan([(1, 2)], [(3, 4)], [(5, 9)])), STANZAS)
 
 
 def test_resolve_plan_rejects_slides_over_the_line_limit(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Only reachable when the slide limit is below paragraphs-per-slide * paragraph limit.
-    monkeypatch.setattr(lyrics_arranger, "MAX_SLIDE_LINES", 5)
-    with pytest.raises(PlanError, match="more than 5 lines"):
-        resolve_plan(LLMPlan.model_validate(plan([(1, 4), (5, 6)], [(7, 9)])), LINES)
+    # Two single-line paragraphs sit exactly at the limit; below it the slide is rejected.
+    monkeypatch.setattr(lyrics_arranger, "MAX_SLIDE_LINES", 1)
+    with pytest.raises(PlanError, match="more than 1 lines"):
+        resolve_plan(LLMPlan.model_validate(GOOD_PLAN), STANZAS)
+
+
+@pytest.mark.parametrize(
+    "crossing",
+    [
+        # a4 + b1: the first stanza's last line shares a slide with the next stanza.
+        plan([(1, 1), (2, 2)], [(3, 3)], [(4, 4), (5, 5)], [(6, 6)], [(7, 7), (8, 8)], [(9, 9)]),
+        # b2 + c1
+        plan([(1, 1), (2, 2)], [(3, 3), (4, 4)], [(5, 5)], [(6, 6), (7, 7)], [(8, 8), (9, 9)]),
+    ],
+)
+def test_resolve_plan_rejects_slides_that_span_two_stanzas(crossing: dict[str, Any]) -> None:
+    with pytest.raises(PlanError, match="spans two stanzas"):
+        resolve_plan(LLMPlan.model_validate(crossing), STANZAS)
 
 
 def test_plan_schema_allows_one_or_two_paragraphs() -> None:
     with pytest.raises(ValueError):  # noqa: PT011
-        LLMPlan.model_validate(plan([(1, 2), (3, 4), (5, 6)]))
+        LLMPlan.model_validate(plan([(1, 1), (2, 2), (3, 3)]))
     with pytest.raises(ValueError):  # noqa: PT011
         LLMPlan.model_validate({"slides": [{"paragraphs": []}]})
 
 
 # ------------------------------------------------------------------- fallback
-def test_fallback_pairs_stanzas() -> None:
-    assert fallback_plan(STANZAS) == [[STANZAS[0], STANZAS[1]], [STANZAS[2]]]
+def test_fallback_gives_two_single_line_paragraphs_per_slide() -> None:
+    assert fallback_plan(STANZAS) == GOOD_SLIDES
 
 
-def test_fallback_splits_long_stanzas_evenly() -> None:
-    long = [f"l{i}" for i in range(1, 11)]  # 10 lines -> 3 parts of 4/4/2
-    slides = fallback_plan([long])
-    paragraphs = [p for slide in slides for p in slide]
-    assert [len(p) for p in paragraphs] == [4, 4, 2]
-    assert [line for p in paragraphs for line in p] == long
-    assert [len(slide) for slide in slides] == [2, 1]
+def test_fallback_never_merges_stanzas() -> None:
+    stanzas = [["x1"], ["y1", "y2", "y3"], ["z1"]]
+    assert fallback_plan(stanzas) == [[["x1"]], [["y1"], ["y2"]], [["y3"]], [["z1"]]]
 
 
-def test_fallback_keeps_stanzas_up_to_the_limit_whole() -> None:
-    stanza = [f"l{i}" for i in range(MAX_PARAGRAPH_LINES)]
-    assert fallback_plan([stanza]) == [[stanza]]
+@pytest.mark.parametrize(("size", "shape"), [(3, [2, 1]), (4, [2, 2]), (8, [2, 2, 2, 2]), (1, [1])])
+def test_fallback_chunks_each_stanza_in_twos(size: int, shape: list[int]) -> None:
+    stanza = [f"l{i}" for i in range(size)]
+    slides = fallback_plan([stanza])
+
+    assert [len(slide) for slide in slides] == shape  # odd stanzas end with a 1-line slide
+    assert all(len(paragraph) == 1 for slide in slides for paragraph in slide)
+    assert [line for slide in slides for (line,) in slide] == stanza
+
+
+def test_fallback_output_is_a_sound_plan() -> None:
+    stanzas = [[f"s{s}l{i}" for i in range(size)] for s, size in enumerate([3, 4, 8, 1, 5])]
+    slides = fallback_plan(stanzas)
+    as_plan: list[list[tuple[int, int]]] = []
+    line = 1
+    for slide in slides:
+        as_plan.append([(line + i, line + i) for i in range(len(slide))])
+        line += len(slide)
+    assert resolve_plan(LLMPlan.model_validate(plan(*as_plan)), stanzas) == slides
 
 
 def test_fallback_of_nothing() -> None:
@@ -116,17 +156,27 @@ def test_fallback_of_nothing() -> None:
 
 # --------------------------------------------------------------- the arranger
 async def test_arranger_uses_the_llm_plan(settings: Settings, fake_chain: FakeChain) -> None:
-    fake_chain.result = plan([(1, 4)], [(5, 6), (7, 9)])
+    # The model may keep a line alone on its own slide; it is still a sound plan.
+    fake_chain.result = plan(
+        [(1, 1)], [(2, 2), (3, 3)], [(4, 4)], [(5, 5), (6, 6)], [(7, 7), (8, 8)], [(9, 9)]
+    )
     arrangement = await LyricsArranger(settings, chain=fake_chain).arrange(STANZAS, "My Song")
 
     assert arrangement.arranged_by == "llm"
-    assert arrangement.slides == [[STANZAS[0]], [STANZAS[1], STANZAS[2]]]
+    assert arrangement.slides == [
+        [["a1"]],
+        [["a2"], ["a3"]],
+        [["a4"]],
+        [["b1"], ["b2"]],
+        [["c1"], ["c2"]],
+        [["c3"]],
+    ]
 
 
 async def test_arranger_sends_numbered_lines_and_title(
     settings: Settings, fake_chain: FakeChain
 ) -> None:
-    fake_chain.result = LLMPlan.model_validate(plan([(1, 4), (5, 6)], [(7, 9)]))  # a model works too
+    fake_chain.result = LLMPlan.model_validate(GOOD_PLAN)  # a model works too
     arranger = LyricsArranger(settings, chain=fake_chain)
     await arranger.arrange(STANZAS, "My Song")
     await arranger.arrange(STANZAS)
@@ -142,7 +192,11 @@ async def test_arranger_sends_numbered_lines_and_title(
 @pytest.mark.parametrize(
     "result",
     [
-        plan([(1, 4)]),  # doesn't cover everything
+        plan([(1, 1), (2, 2)]),  # doesn't cover everything
+        plan([(1, 4)], [(5, 6)], [(7, 9)]),  # the old multi-line paragraphs
+        plan(  # crosses from stanza a into stanza b
+            [(1, 1), (2, 2)], [(3, 3)], [(4, 4), (5, 5)], [(6, 6)], [(7, 7), (8, 8)], [(9, 9)]
+        ),
         {"unexpected": "shape"},
         "not even a plan",
         RuntimeError("OpenRouter is down"),

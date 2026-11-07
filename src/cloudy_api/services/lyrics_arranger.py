@@ -8,7 +8,6 @@ a presentation and the lyrics are never altered.
 """
 
 import logging
-import math
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
@@ -20,11 +19,10 @@ from ..config import Settings
 
 log = logging.getLogger(__name__)
 
+# A slide shows at most two paragraphs, and a paragraph is a single verse line.
 PARAGRAPHS_PER_SLIDE = 2
-# A stanza longer than this is split into shorter paragraphs.
-MAX_PARAGRAPH_LINES = 6
-MAX_SLIDE_LINES = 12
-_SPLIT_TARGET_LINES = 4
+MAX_PARAGRAPH_LINES = 1
+MAX_SLIDE_LINES = PARAGRAPHS_PER_SLIDE * MAX_PARAGRAPH_LINES
 
 Paragraph = list[str]
 Slide = list[Paragraph]
@@ -35,21 +33,18 @@ The lyrics arrive as numbered lines; blank lines mark the original stanzas.
 
 Answer with the slides in order. Each slide has 1 to {PARAGRAPHS_PER_SLIDE} \
 paragraphs, and each paragraph is an inclusive range of consecutive line numbers \
-(start, end).
+(start, end) covering exactly {MAX_PARAGRAPH_LINES} line, so start equals end.
 
 Hard rules:
 - Cover every line exactly once, in the original order: no gaps, overlaps or reordering.
 - Never write, edit or translate lyrics. You only choose the ranges.
-- A paragraph has at most {MAX_PARAGRAPH_LINES} lines and a slide at most {MAX_SLIDE_LINES}.
+- Every paragraph is a single line, and a slide holds at most {MAX_SLIDE_LINES} lines.
+- A slide never mixes lines from two stanzas: every stanza starts on a new slide.
 
 Guidelines:
-- Aim for {PARAGRAPHS_PER_SLIDE} paragraphs per slide so the deck stays short.
-- Keep the original stanza breaks as paragraph breaks. Split a stanza only when it \
-is longer than {_SPLIT_TARGET_LINES} lines, at a natural phrase boundary.
-- Pair paragraphs that belong together (a verse with its chorus, question and \
-answer) and keep a repeated chorus or bridge intact.
-- Avoid a slide with a single short paragraph unless it is the last one or the \
-lyrics demand it.
+- Fill each slide with {PARAGRAPHS_PER_SLIDE} consecutive lines of the same stanza.
+- A slide with a single line only appears at the end of a stanza with an odd \
+number of lines.
 """
 
 
@@ -97,12 +92,15 @@ def number_lines(stanzas: list[Paragraph]) -> tuple[list[str], str]:
     return lines, "\n\n".join(blocks)
 
 
-def resolve_plan(plan: LLMPlan, lines: list[str]) -> list[Slide]:
+def resolve_plan(plan: LLMPlan, stanzas: list[Paragraph]) -> list[Slide]:
     """Turn ranges into slides of text, raising ``PlanError`` if the plan is unsound."""
+    lines = [line for stanza in stanzas for line in stanza]
+    stanza_of = [index for index, stanza in enumerate(stanzas) for _ in stanza]
     slides: list[Slide] = []
     expected = 1
     for slide_number, spec in enumerate(plan.slides, start=1):
         slide: Slide = []
+        first = expected
         for rng in spec.paragraphs:
             if rng.start != expected or rng.end < rng.start or rng.end > len(lines):
                 raise PlanError(
@@ -115,26 +113,20 @@ def resolve_plan(plan: LLMPlan, lines: list[str]) -> list[Slide]:
             expected = rng.end + 1
         if sum(len(paragraph) for paragraph in slide) > MAX_SLIDE_LINES:
             raise PlanError(f"slide {slide_number}: more than {MAX_SLIDE_LINES} lines")
+        if stanza_of[first - 1] != stanza_of[expected - 2]:
+            raise PlanError(f"slide {slide_number}: spans two stanzas")
         slides.append(slide)
     if expected != len(lines) + 1:
         raise PlanError(f"plan stops at line {expected - 1} of {len(lines)}")
     return slides
 
 
-def _split_long(stanza: Paragraph) -> list[Paragraph]:
-    if len(stanza) <= MAX_PARAGRAPH_LINES:
-        return [stanza]
-    parts = math.ceil(len(stanza) / _SPLIT_TARGET_LINES)
-    size = math.ceil(len(stanza) / parts)
-    return [stanza[i : i + size] for i in range(0, len(stanza), size)]
-
-
 def fallback_plan(stanzas: list[Paragraph]) -> list[Slide]:
-    """Keep stanza breaks (splitting very long ones) and pair paragraphs per slide."""
-    paragraphs = [part for stanza in stanzas for part in _split_long(stanza)]
+    """Two lines per slide, one paragraph each; every stanza starts a new slide."""
     return [
-        paragraphs[i : i + PARAGRAPHS_PER_SLIDE]
-        for i in range(0, len(paragraphs), PARAGRAPHS_PER_SLIDE)
+        [[line] for line in stanza[i : i + PARAGRAPHS_PER_SLIDE]]
+        for stanza in stanzas
+        for i in range(0, len(stanza), PARAGRAPHS_PER_SLIDE)
     ]
 
 
@@ -167,7 +159,7 @@ class LyricsArranger:
         if self._chain is None:
             return Arrangement(fallback_plan(stanzas), "fallback")
 
-        lines, numbered = number_lines(stanzas)
+        _, numbered = number_lines(stanzas)
         header = f"Song: {title}\n\n" if title else ""
         messages: list[BaseMessage] = [
             SystemMessage(SYSTEM_PROMPT),
@@ -175,7 +167,7 @@ class LyricsArranger:
         ]
         try:
             raw = await self._chain.ainvoke(messages)
-            slides = resolve_plan(LLMPlan.model_validate(raw), lines)
+            slides = resolve_plan(LLMPlan.model_validate(raw), stanzas)
         except Exception as exc:  # LLM, network and parsing errors alike must not fail the request
             log.warning("lyrics.llm_failed %s: %s; using fallback grouping", type(exc).__name__, exc)
             return Arrangement(fallback_plan(stanzas), "fallback")

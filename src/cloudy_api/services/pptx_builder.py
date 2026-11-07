@@ -1,7 +1,7 @@
 """Render lyric slides as a .pptx with python-pptx.
 
-Layout: 16:9, no title slide, one text box per slide pinned to the top with
-centered text in plain Arial. The box and the slide background have no fill,
+Layout: 16:9, no title slide, one compact text box per slide pinned
+top-center, with centered text in plain Arial. The box and the slide background have no fill,
 so the text can be laid over a video or backdrop.
 """
 
@@ -24,10 +24,12 @@ DEFAULT_FONT_COLOR = "000000"
 
 SLIDE_WIDTH = Inches(13.333)
 SLIDE_HEIGHT = Inches(7.5)
-_MARGIN_X = Inches(0.6)
+# A compact box near the top edge, centered horizontally: room for two lines at
+# the largest size, or for wrapped lines at a smaller one.
+_BOX_WIDTH = Inches(10.5)
+_BOX_HEIGHT = Inches(2.6)
+_BOX_LEFT = Emu((SLIDE_WIDTH - _BOX_WIDTH) // 2)
 _MARGIN_TOP = Inches(0.4)
-_BOX_WIDTH = Emu(SLIDE_WIDTH - 2 * _MARGIN_X)
-_BOX_HEIGHT = Emu(SLIDE_HEIGHT - _MARGIN_TOP - Inches(0.4))
 
 MAX_FONT_PT = 40
 MIN_FONT_PT = 24
@@ -56,7 +58,7 @@ def _add_slide(prs: PresentationType, slide: Slide, color: RGBColor) -> None:
     page = prs.slides.add_slide(prs.slide_layouts[_BLANK_LAYOUT])
     page.background.fill.background()  # no fill
 
-    box = page.shapes.add_textbox(_MARGIN_X, _MARGIN_TOP, _BOX_WIDTH, _BOX_HEIGHT)
+    box = page.shapes.add_textbox(_BOX_LEFT, _MARGIN_TOP, _BOX_WIDTH, _BOX_HEIGHT)
     box.fill.background()
     box.line.fill.background()
 
