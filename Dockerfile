@@ -23,6 +23,34 @@ FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv
 FROM denoland/deno:bin-${DENO_VERSION} AS deno
 FROM node:${NODE_VERSION}-trixie-slim AS node
 
+# --- builder: resolves and builds the virtualenv ---------------------------
+# Some locked dependencies (pyyaml, zstandard via langsmith) have no wheel for
+# Python 3.15 yet, so uv compiles them from source and needs a C toolchain.
+# The toolchain lives only in this stage; the runtime image stays slim.
+FROM python:${PYTHON_VERSION}-slim-trixie AS builder
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential libffi-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=uv /uv /uvx /usr/local/bin/
+
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=never
+
+WORKDIR /app
+
+# Dependencies first for layer caching, then the project itself. --frozen keeps
+# yt-dlp-ejs at exactly the version yt-dlp pins (EJS wiki: they MUST match).
+COPY pyproject.toml uv.lock .python-version ./
+RUN uv sync --frozen --no-dev --no-install-project
+
+COPY README.md ./
+COPY src ./src
+RUN uv sync --frozen --no-dev
+
+# --- runtime ---------------------------------------------------------------
 FROM python:${PYTHON_VERSION}-slim-trixie
 
 # ffmpeg also provides ffprobe. libstdc++6 is needed by the node binary.
@@ -57,14 +85,11 @@ ENV UV_COMPILE_BYTECODE=1 \
 
 WORKDIR /app
 
-# Dependencies first for layer caching, then the project itself. --frozen keeps
-# yt-dlp-ejs at exactly the version yt-dlp pins (EJS wiki: they MUST match).
-COPY pyproject.toml uv.lock .python-version ./
-RUN uv sync --frozen --no-dev --no-install-project
-
-COPY README.md ./
+# Same base image and path as the builder, so the venv's interpreter symlinks
+# and the editable install of the project (src/) resolve unchanged.
+COPY --from=builder /app/.venv ./.venv
+COPY pyproject.toml uv.lock .python-version README.md ./
 COPY src ./src
-RUN uv sync --frozen --no-dev
 
 RUN useradd --create-home --uid 10001 app \
     && mkdir -p /tmp/home /tmp/cache /tmp/cloudy \
