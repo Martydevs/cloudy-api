@@ -305,6 +305,32 @@ Leave it unset unless downloads fail. yt-dlp's defaults are tuned per release.
 Free instances sleep after 15 minutes idle (≈1 min cold start). Have the Nuxt app
 call `/healthz` when the YouTube page opens to wake it up.
 
+## Deploying to Railway
+
+Railway builds the same `Dockerfile` (selected by `railway.json`, which also sets the
+`/healthz` health check and an on-failure restart policy). Railway injects `PORT`,
+which the image's `CMD` already uses.
+
+1. New Project → Deploy from GitHub repo (or `railway up` from this directory).
+2. In the service **Variables**, set:
+
+   | Variable | Value |
+   | --- | --- |
+   | `API_KEY` | a long random secret (shared with the Nuxt app) |
+   | `SIGNING_SECRET` | a long random secret (`openssl rand -hex 32`) |
+   | `ALLOWED_ORIGINS` | the Vercel origin(s), comma-separated |
+   | `PUBLIC_BASE_URL` | `https://${{RAILWAY_PUBLIC_DOMAIN}}` |
+   | `OPENROUTER_API_KEY` | optional (lyrics LLM arrangement) |
+
+   The limits in `.env.example` all have defaults; override only what you need.
+3. Settings → Networking → **Generate Domain**.
+4. Run the smoke test above against `https://<service>.up.railway.app`.
+
+Railway's filesystem is ephemeral, so `WORK_DIR` (`/tmp/cloudy`) is cleared on every
+deploy/restart; that's fine because files only live for `FILE_TTL_MINUTES`. Unlike
+Render's Free plan the service doesn't sleep when idle, but watch memory: each
+download runs ffmpeg plus a JS runtime, so keep `MAX_CONCURRENT_JOBS=1` on small plans.
+
 ### When downloads start failing
 
 1. **Bump yt-dlp first.** YouTube changes often. Run
