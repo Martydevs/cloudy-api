@@ -25,6 +25,8 @@ def clean_env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
         "OPENROUTER_MODEL",
         "OPENROUTER_BASE_URL",
         "LLM_TIMEOUT_SECONDS",
+        "PYTUBEFIX_CLIENT",
+        "PYTUBEFIX_PROXY",
     ):
         monkeypatch.delenv(name, raising=False)
     return monkeypatch
@@ -51,6 +53,8 @@ def test_defaults(clean_env: pytest.MonkeyPatch) -> None:
     assert s.openrouter_model == "@preset/lyrics-generator"
     assert s.openrouter_base_url == "https://openrouter.ai/api/v1"
     assert s.llm_timeout_seconds == 30
+    assert s.pytubefix_client == "MWEB"
+    assert s.pytubefix_proxy is None
 
 
 def test_env_parsing(clean_env: pytest.MonkeyPatch) -> None:
@@ -239,3 +243,30 @@ def test_get_settings_is_cached(clean_env: pytest.MonkeyPatch, tmp_path: Path) -
         assert get_settings() is get_settings()
     finally:
         get_settings.cache_clear()
+
+
+# ---------------------------------------------------------------- pytubefix
+def test_pytubefix_settings_from_env(clean_env: pytest.MonkeyPatch) -> None:
+    clean_env.setenv("PYTUBEFIX_CLIENT", " web_kids ")
+    clean_env.setenv("PYTUBEFIX_PROXY", "http://user:pass@proxy:8080")
+    s = Settings(api_key="k", signing_secret="s", _env_file=None)
+    assert s.pytubefix_client == "WEB_KIDS"
+    assert s.pytubefix_proxy is not None
+    assert s.pytubefix_proxy.get_secret_value() == "http://user:pass@proxy:8080"
+    assert "user:pass" not in repr(s)
+
+
+def test_empty_pytubefix_proxy_means_none(clean_env: pytest.MonkeyPatch) -> None:
+    clean_env.setenv("PYTUBEFIX_PROXY", " ")
+    assert Settings(api_key="k", signing_secret="s", _env_file=None).pytubefix_proxy is None
+
+
+def test_unknown_pytubefix_client_fails(clean_env: pytest.MonkeyPatch) -> None:
+    clean_env.setenv("PYTUBEFIX_CLIENT", "NETSCAPE")
+    with pytest.raises(ValidationError, match="unsupported pytubefix client"):
+        Settings(api_key="k", signing_secret="s", _env_file=None)
+
+
+def test_pytubefix_client_accepts_non_string_passthrough(clean_env: pytest.MonkeyPatch) -> None:
+    with pytest.raises(ValidationError):
+        Settings(api_key="k", signing_secret="s", pytubefix_client=1, _env_file=None)

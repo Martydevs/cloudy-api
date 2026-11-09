@@ -26,6 +26,13 @@ class Format(StrEnum):
         return {Format.MP4_720: 720, Format.MP4_1080: 1080}.get(self)
 
 
+class Engine(StrEnum):
+    """Download backend behind a job: /v1 uses yt-dlp, /v2 uses pytubefix."""
+
+    YTDLP = "ytdlp"
+    PYTUBEFIX = "pytubefix"
+
+
 class JobStatus(StrEnum):
     QUEUED = "queued"
     RUNNING = "running"

@@ -7,6 +7,7 @@ from typing import Annotated
 import yt_dlp
 from pydantic import AliasChoices, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+from pytubefix.innertube import _default_clients as PYTUBEFIX_CLIENTS
 
 from .schemas import MAX_LYRICS_BATCH_ITEMS
 
@@ -98,6 +99,14 @@ class Settings(BaseSettings):
     # documented levers for YouTube bot checks (player clients, PO tokens).
     ytdlp_extractor_args: Annotated[ExtractorArgs, NoDecode] = {}
 
+    # /v2 (pytubefix) YouTube client. MWEB was the only one that passed the bot
+    # check and downloaded everything from Railway (2026-11-09); WEB_KIDS and
+    # IOS_KIDS pass too but only see YouTube Kids videos.
+    pytubefix_client: str = "MWEB"
+    # Applies to pytubefix only. pytubefix installs it as the process-wide
+    # urllib proxy (yt-dlp and httpx don't use that opener).
+    pytubefix_proxy: SecretStr | None = None
+
     @field_validator("allowed_origins", mode="before")
     @classmethod
     def _split_origins(cls, value: object) -> object:
@@ -112,7 +121,10 @@ class Settings(BaseSettings):
             return value.strip().rstrip("/") or None
         return value
 
-    @field_validator("ytdlp_cookies_file", "ytdlp_proxy", "openrouter_api_key", mode="before")
+    @field_validator(
+        "ytdlp_cookies_file", "ytdlp_proxy", "pytubefix_proxy", "openrouter_api_key",
+        mode="before",
+    )
     @classmethod
     def _empty_to_none(cls, value: object) -> object:
         if isinstance(value, str) and not value.strip():
@@ -149,6 +161,19 @@ class Settings(BaseSettings):
         if isinstance(value, str):
             return parse_extractor_args(value)
         return value
+
+    @field_validator("pytubefix_client", mode="before")
+    @classmethod
+    def _check_pytubefix_client(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        client = value.strip().upper()
+        if client not in PYTUBEFIX_CLIENTS:
+            raise ValueError(
+                f"unsupported pytubefix client: {value!r}; "
+                f"supported: {', '.join(PYTUBEFIX_CLIENTS)}"
+            )
+        return client
 
     @property
     def file_ttl_seconds(self) -> int:

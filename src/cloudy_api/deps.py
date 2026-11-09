@@ -1,16 +1,22 @@
+from collections.abc import Callable
 from typing import Annotated
 
 from fastapi import Depends, HTTPException, Request
 
-from .services.downloader import Downloader, DownloaderError
+from .services.downloader import DownloaderError, VideoDownloader
 from .services.jobs import JobManager
 from .services.lyrics_arranger import LyricsArranger
 
 
-def get_downloader(request: Request) -> Downloader:
+def get_downloader(request: Request) -> VideoDownloader:
     # Lives on app.state so the background runner (outside request scope)
     # and the routes share one instance; swap it via app.dependency_overrides.
     return request.app.state.downloader
+
+
+def get_pytubefix_downloader(request: Request) -> VideoDownloader:
+    # Engine behind /v2 (temporary bot-check workaround).
+    return request.app.state.pytubefix_downloader
 
 
 def get_job_manager(request: Request) -> JobManager:
@@ -21,7 +27,9 @@ def get_arranger(request: Request) -> LyricsArranger:
     return request.app.state.arranger
 
 
-DownloaderDep = Annotated[Downloader, Depends(get_downloader)]
+DownloaderGetter = Callable[[Request], VideoDownloader]
+
+DownloaderDep = Annotated[VideoDownloader, Depends(get_downloader)]
 JobManagerDep = Annotated[JobManager, Depends(get_job_manager)]
 ArrangerDep = Annotated[LyricsArranger, Depends(get_arranger)]
 

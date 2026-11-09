@@ -9,8 +9,10 @@ deployed as a Docker web service on Render Free.
 
 ## How it works
 
-- **yt-dlp** is the only YouTube library. It fetches metadata, picks streams and
-  runs its postprocessors (merge to MP4, extract MP3).
+- **yt-dlp** backs `/v1`. It fetches metadata, picks streams and runs its
+  postprocessors (merge to MP4, extract MP3).
+- **pytubefix** backs `/v2`, a temporary workaround for YouTube's "not a bot" check
+  on datacenter IPs. See [API (v2, pytubefix)](#api-v2-pytubefix).
 - **ffmpeg / ffprobe** are required system tools; yt-dlp drives them.
 - **A JavaScript runtime** (+ `yt-dlp-ejs`, pulled by `yt-dlp[default]`) solves
   YouTube's JS challenges. Without one, some formats disappear. The image ships
@@ -29,7 +31,7 @@ All `/v1/*` routes need the `X-API-Key` header, except the signed file route.
 
 | Method | Path | Notes |
 |---|---|---|
-| GET | `/healthz` | `{status, yt_dlp_version, yt_dlp_ejs_version, ffmpeg, js_runtime, js_runtimes: {name: found}}`. No auth. `503` when ffmpeg/ffprobe or yt-dlp-ejs is missing, or none of the enabled JS runtimes is installed. |
+| GET | `/healthz` | `{status, yt_dlp_version, yt_dlp_ejs_version, ffmpeg, js_runtime, js_runtimes: {name: found}, pytubefix_version, pytubefix_node}`. No auth. `503` when ffmpeg/ffprobe or yt-dlp-ejs is missing, or none of the enabled JS runtimes is installed. The `pytubefix_*` fields are informational and never cause a `503`. |
 | GET | `/v1/videos/{video_id}` | Title, duration, thumbnail, channel, `available_heights`, `downloadable`, `reason` (`too_long`, `live`, `unknown_duration`). |
 | POST | `/v1/jobs` | `{video_ids: [1..10], format: "mp4_720" \| "mp4_1080" \| "mp3"}` → `202 {job_id, status}`. `422` for bad/too-long/unavailable videos, `429` when the queue is full. |
 | GET | `/v1/jobs/{job_id}` | `status` (`queued\|running\|zipping\|done\|failed\|expired`), `progress`, `items[]`, and once done `download_url`, `filename`, `size_bytes`, `expires_at`. |
@@ -52,6 +54,49 @@ Behaviour:
   `{"detail": [ ... ]}` list. Item error codes: `private`, `unavailable`, `age_restricted`, `members_only`,
   `geo_restricted`, `live`, `format_unavailable`, `bot_check`, `ffmpeg_missing`,
   `download_failed`, `cancelled`, `internal`.
+
+## API (v2, pytubefix)
+
+A temporary workaround for YouTube's "Sign in to confirm you're not a bot" check
+(`bot_check`) on Render/Railway datacenter IPs. `/v2` has the same routes, request
+and response bodies, error codes and auth as `/v1`, but downloads through
+[pytubefix](https://github.com/JuanBindez/pytubefix) instead of yt-dlp. The Nuxt
+app switches engines by changing the path prefix; there's no automatic fallback.
+
+| Method | Path |
+|---|---|
+| GET | `/v2/videos/{video_id}` |
+| POST | `/v2/jobs` |
+| GET | `/v2/jobs/{job_id}` |
+| GET | `/v2/jobs/{job_id}/file?exp=…&sig=…` |
+| DELETE | `/v2/jobs/{job_id}` |
+
+Lyrics stay under `/v1` only.
+
+- The default client is `MWEB`. WEB-family clients send a PO token that pytubefix
+  generates by running BotGuard in the Node.js binary bundled with it
+  (`nodejs-wheel-binaries`), so it doesn't depend on the image's own node.
+  `PYTUBEFIX_CLIENT` and `PYTUBEFIX_PROXY` are the levers when YouTube blocks it.
+  Nothing guarantees the bypass works.
+- Client test from Railway (2026-11-09, video info + MP4 download):
+  - `MWEB`: worked for every video at first, then got `bot_check` on most videos
+    after ~60 test requests (the IP seems to get flagged by heavy traffic).
+  - `WEB_KIDS`, `IOS_KIDS`: not bot-checked, but only see videos available on
+    YouTube Kids; others fail as `unavailable`.
+  - `ANDROID`, `ANDROID_KIDS`: metadata works, downloads fail (PO token / 403).
+  - `WEB`, `TV`, `IOS`, `ANDROID_VR`, `TV_DOWNGRADED`: `bot_check`. The remaining
+    clients report the video as unavailable or fail.
+  - A residential proxy (`PYTUBEFIX_PROXY`) is the reliable fix for datacenter IPs.
+- pytubefix doesn't merge streams, so the service runs **ffmpeg** itself: MP4
+  picks the best H.264 video stream up to the target height (any codec if there's
+  no H.264) plus the best AAC audio, and copies both into the MP4 (non-AAC audio
+  is re-encoded to AAC). Without a matching adaptive pair it falls back to a
+  progressive stream. MP3 converts the best audio stream at 192 kbps.
+- v1 and v2 share one job queue: `MAX_CONCURRENT_JOBS` and `MAX_QUEUE` count jobs
+  of both versions. Poll a v2 job under `/v2/jobs/{id}`; its `download_url`
+  points at `/v2`.
+- pytubefix breaks when YouTube changes, like yt-dlp. Bump it with
+  `uv lock --upgrade-package pytubefix`.
 
 ## Configuration
 
@@ -80,6 +125,8 @@ Copy `.env.example` to `.env`.
 | `YTDLP_PROXY` | — | Optional proxy URL. |
 | `YTDLP_JS_RUNTIMES` | `deno,node` | Enabled JS runtimes, comma-separated `name[:path]` (`deno`, `node`, `bun`, `quickjs`). |
 | `YTDLP_EXTRACTOR_ARGS` | — | yt-dlp `--extractor-args`, space-separated `IE_KEY:ARGS` entries. See [Extractor arguments](#extractor-arguments). |
+| `PYTUBEFIX_CLIENT` | `MWEB` | `/v2` YouTube client (`MWEB`, `WEB_KIDS`, `IOS_KIDS`, `WEB`, `TV`, …; case-insensitive). See the client test notes in [API (v2, pytubefix)](#api-v2-pytubefix). |
+| `PYTUBEFIX_PROXY` | — | Optional `/v2` proxy URL. pytubefix installs it as the process-wide `urllib` proxy (yt-dlp and the LLM client don't use that). |
 
 ## Local development
 
@@ -340,7 +387,9 @@ download runs ffmpeg plus a JS runtime, so keep `MAX_CONCURRENT_JOBS=1` on small
 2. "Sign in to confirm you're not a bot" (`bot_check`): Render's datacenter IPs get
    flagged. Add a cookies file as a Render Secret File and set
    `YTDLP_COOKIES_FILE=/etc/secrets/cookies.txt`, set `YTDLP_PROXY`, or try other
-   player clients / a PO token via `YTDLP_EXTRACTOR_ARGS`.
+   player clients / a PO token via `YTDLP_EXTRACTOR_ARGS`. Or point the Nuxt app
+   at `/v2` (pytubefix, automatic PO token); if v2 also returns `bot_check`, try
+   `PYTUBEFIX_CLIENT` / `PYTUBEFIX_PROXY`, and bump pytubefix.
 3. `/healthz` returning `503` means ffmpeg, yt-dlp-ejs, or every enabled JS runtime
    is missing from the image. Check `js_runtimes` and `yt_dlp_ejs_version` in the response.
 

@@ -9,7 +9,9 @@ from cloudy_api import cli
 from cloudy_api import main as main_module
 from cloudy_api.config import Settings
 from cloudy_api.main import check_dependencies, create_app
+from cloudy_api.schemas import Engine
 from cloudy_api.services.downloader import Downloader
+from cloudy_api.services.pytubefix_downloader import PytubefixDownloader
 
 ALL_TOOLS = {"ffmpeg", "ffprobe", "deno", "node"}
 
@@ -40,6 +42,8 @@ def test_healthz_all_dependencies(client: TestClient, monkeypatch: pytest.Monkey
         "ffmpeg": True,
         "js_runtime": True,
         "js_runtimes": {"deno": True, "node": True},
+        "pytubefix_version": main_module.PYTUBEFIX_VERSION,
+        "pytubefix_node": True,
     }
 
 
@@ -175,11 +179,23 @@ def test_openapi_documents_api_key(client: TestClient) -> None:
         "/v1/jobs/{job_id}/file",
         "/v1/lyrics/pptx",
         "/v1/lyrics/pptx/batch",
+        "/v2/videos/{video_id}",
+        "/v2/jobs",
+        "/v2/jobs/{job_id}",
+        "/v2/jobs/{job_id}/file",
     }
-    for path in ("/v1/lyrics/pptx", "/v1/lyrics/pptx/batch"):
+    for path in ("/v1/lyrics/pptx", "/v1/lyrics/pptx/batch", "/v1/jobs", "/v2/jobs"):
         assert spec["paths"][path]["post"]["security"] == [{"APIKeyHeader": []}]
-    file_op = spec["paths"]["/v1/jobs/{job_id}/file"]["get"]
-    assert "security" not in file_op  # signed URL, no API key
+    for version in ("v1", "v2"):
+        assert spec["paths"][f"/{version}/videos/{{video_id}}"]["get"]["security"] == [
+            {"APIKeyHeader": []}
+        ]
+        file_op = spec["paths"][f"/{version}/jobs/{{job_id}}/file"]["get"]
+        assert "security" not in file_op  # signed URL, no API key
+    operation_ids = [
+        op["operationId"] for item in spec["paths"].values() for op in item.values()
+    ]
+    assert len(operation_ids) == len(set(operation_ids))
 
 
 # ---------------------------------------------------------------- lifespan
@@ -231,6 +247,11 @@ def test_create_app_defaults(
     assert app.state.settings is settings
     assert isinstance(app.state.downloader, Downloader)
     assert app.state.job_manager.downloader is app.state.downloader
+    assert isinstance(app.state.pytubefix_downloader, PytubefixDownloader)
+    assert app.state.job_manager.downloaders == {
+        Engine.YTDLP: app.state.downloader,
+        Engine.PYTUBEFIX: app.state.pytubefix_downloader,
+    }
 
 
 def test_check_dependencies_reports_version(
@@ -244,6 +265,8 @@ def test_check_dependencies_reports_version(
         "ffmpeg": True,
         "js_runtime": True,
         "js_runtimes": {"deno": False, "node": True},
+        "pytubefix_version": main_module.PYTUBEFIX_VERSION,
+        "pytubefix_node": True,
     }
 
 

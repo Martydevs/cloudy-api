@@ -15,6 +15,7 @@ dependencies = [
     "langchain-openai>=1.7.4",
     "pydantic-settings>=2.16.2",
     "python-pptx>=1.0.2",
+    "pytubefix>=11.2.1",
     "scalar-fastapi>=1.9.1",
     "yt-dlp[default]>=2026.10.26",
 ]

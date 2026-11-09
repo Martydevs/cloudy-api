@@ -10,15 +10,18 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
+from pytubefix.botGuard.bot_guard import NODE_PATH as PYTUBEFIX_NODE_PATH
+from pytubefix.version import __version__ as PYTUBEFIX_VERSION
 from scalar_fastapi import get_scalar_api_reference
 from yt_dlp.version import __version__ as YT_DLP_VERSION
 
 from .config import JS_RUNTIME_EXECUTABLES, Settings, get_settings
 from .middleware import BodySizeLimitMiddleware
 from .routers import jobs, lyrics, videos
-from .services.downloader import Downloader
+from .services.downloader import Downloader, VideoDownloader
 from .services.jobs import JobManager
 from .services.lyrics_arranger import LyricsArranger
+from .services.pytubefix_downloader import PytubefixDownloader
 
 log = logging.getLogger("cloudy_api")
 
@@ -34,6 +37,10 @@ class Health(BaseModel):
     js_runtime: bool
     # Every enabled runtime (YTDLP_JS_RUNTIMES) and whether it was found.
     js_runtimes: dict[str, bool]
+    # /v2 (pytubefix). Informational only: they don't change status/503.
+    pytubefix_version: str
+    # The Node.js binary pytubefix bundles to generate PO tokens.
+    pytubefix_node: bool
 
 
 def js_runtime_available(name: str, path: str | None) -> bool:
@@ -68,6 +75,8 @@ def check_dependencies(settings: Settings) -> Health:
         ffmpeg=ffmpeg,
         js_runtime=js_runtime,
         js_runtimes=runtimes,
+        pytubefix_version=PYTUBEFIX_VERSION,
+        pytubefix_node=os.path.isfile(PYTUBEFIX_NODE_PATH),
     )
 
 
@@ -105,8 +114,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 def create_app(
     settings: Settings | None = None,
-    downloader: Downloader | None = None,
+    downloader: VideoDownloader | None = None,
     arranger: LyricsArranger | None = None,
+    pytubefix_downloader: VideoDownloader | None = None,
 ) -> FastAPI:
     _configure_logging()
     settings = settings or get_settings()
@@ -125,7 +135,10 @@ def create_app(
     )
     app.state.settings = settings
     app.state.downloader = downloader or Downloader(settings)
-    app.state.job_manager = JobManager(settings, app.state.downloader)
+    app.state.pytubefix_downloader = pytubefix_downloader or PytubefixDownloader(settings)
+    app.state.job_manager = JobManager(
+        settings, app.state.downloader, pytubefix_downloader=app.state.pytubefix_downloader
+    )
     app.state.arranger = arranger or LyricsArranger(settings)
 
     app.add_middleware(
@@ -155,6 +168,10 @@ def create_app(
     app.include_router(videos.router)
     app.include_router(jobs.router)
     app.include_router(jobs.files_router)
+    # /v2: pytubefix instead of yt-dlp, a temporary YouTube bot-check workaround.
+    app.include_router(videos.v2_router)
+    app.include_router(jobs.v2_router)
+    app.include_router(jobs.v2_files_router)
     app.include_router(lyrics.router)
     return app
 

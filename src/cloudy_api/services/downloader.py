@@ -16,7 +16,7 @@ import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 import yt_dlp
 from yt_dlp.utils import DownloadCancelled, YoutubeDLError
@@ -53,6 +53,56 @@ class DownloadResult:
     path: Path
     title: str
     actual_height: int | None
+
+
+class VideoDownloader(Protocol):
+    """What routes and the job runner need from a download engine."""
+
+    def probe(self, video_id: str) -> VideoInfo: ...
+
+    def download(
+        self,
+        video_id: str,
+        fmt: Format,
+        dest: Path,
+        on_progress: ProgressCallback,
+        is_cancelled: Callable[[], bool] = ...,
+    ) -> DownloadResult: ...
+
+
+class ProbeCache:
+    """Thread-safe ``video_id -> VideoInfo`` cache with a fixed TTL."""
+
+    def __init__(self, now: Callable[[], float], ttl: float = PROBE_CACHE_TTL_SECONDS) -> None:
+        self._now = now
+        self._ttl = ttl
+        self._entries: dict[str, tuple[float, VideoInfo]] = {}
+        self._lock = threading.Lock()
+
+    def get(self, video_id: str) -> VideoInfo | None:
+        with self._lock:
+            now = self._now()
+            for key, (stamp, _) in list(self._entries.items()):
+                if now - stamp > self._ttl:
+                    del self._entries[key]
+            entry = self._entries.get(video_id)
+        return entry[1] if entry else None
+
+    def put(self, info: VideoInfo) -> None:
+        with self._lock:
+            self._entries[info.video_id] = (self._now(), info)
+
+
+def not_downloadable_reason(
+    *, live: bool, duration: int | None, max_duration: int
+) -> str | None:
+    if live:
+        return "live"
+    if duration is None:
+        return "unknown_duration"
+    if duration > max_duration:
+        return "too_long"
+    return None
 
 
 # (substring in lowercase yt-dlp message, code, client_error). Order matters:
@@ -132,9 +182,7 @@ class Downloader:
     ) -> None:
         self._settings = settings
         self._ydl_factory = ydl_factory
-        self._now = now
-        self._probe_cache: dict[str, tuple[float, VideoInfo]] = {}
-        self._cache_lock = threading.Lock()
+        self._probe_cache = ProbeCache(now)
 
     # ------------------------------------------------------------------ opts
     def build_opts(self, fmt: Format | None = None) -> dict[str, Any]:
@@ -207,7 +255,7 @@ class Downloader:
 
     # ----------------------------------------------------------------- probe
     def probe(self, video_id: str) -> VideoInfo:
-        cached = self._cached_probe(video_id)
+        cached = self._probe_cache.get(video_id)
         if cached is not None:
             return cached
         try:
@@ -216,31 +264,19 @@ class Downloader:
         except YoutubeDLError as exc:  # DownloadError and friends
             raise map_ytdlp_error(exc) from exc
         result = self._to_video_info(video_id, info)
-        with self._cache_lock:
-            self._probe_cache[video_id] = (self._now(), result)
+        self._probe_cache.put(result)
         return result
-
-    def _cached_probe(self, video_id: str) -> VideoInfo | None:
-        with self._cache_lock:
-            now = self._now()
-            for key, (stamp, _) in list(self._probe_cache.items()):
-                if now - stamp > PROBE_CACHE_TTL_SECONDS:
-                    del self._probe_cache[key]
-            entry = self._probe_cache.get(video_id)
-        return entry[1] if entry else None
 
     def _to_video_info(self, video_id: str, info: dict[str, Any]) -> VideoInfo:
         duration = info.get("duration")
         duration = int(duration) if isinstance(duration, int | float) else None
         live_status = info.get("live_status")
-
-        reason: str | None = None
-        if live_status in ("is_live", "is_upcoming", "post_live") or info.get("is_live"):
-            reason = "live"
-        elif duration is None:
-            reason = "unknown_duration"
-        elif duration > self._settings.max_duration_seconds:
-            reason = "too_long"
+        reason = not_downloadable_reason(
+            live=live_status in ("is_live", "is_upcoming", "post_live")
+            or bool(info.get("is_live")),
+            duration=duration,
+            max_duration=self._settings.max_duration_seconds,
+        )
 
         return VideoInfo(
             video_id=video_id,

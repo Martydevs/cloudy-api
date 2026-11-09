@@ -143,16 +143,28 @@ def fake_downloader() -> FakeDownloader:
 
 
 @pytest.fixture
+def fake_pytubefix() -> FakeDownloader:
+    """The /v2 engine's stand-in, separate from the yt-dlp one."""
+    return FakeDownloader()
+
+
+@pytest.fixture
 def fake_chain() -> FakeChain:
     return FakeChain()
 
 
 @pytest.fixture
-def app(settings: Settings, fake_downloader: FakeDownloader, fake_chain: FakeChain) -> FastAPI:
+def app(
+    settings: Settings,
+    fake_downloader: FakeDownloader,
+    fake_pytubefix: FakeDownloader,
+    fake_chain: FakeChain,
+) -> FastAPI:
     return create_app(
         settings,
         downloader=fake_downloader,  # type: ignore[arg-type]
         arranger=LyricsArranger(settings, chain=fake_chain),
+        pytubefix_downloader=fake_pytubefix,  # type: ignore[arg-type]
     )
 
 
@@ -163,12 +175,15 @@ def client(app: FastAPI) -> Iterator[TestClient]:
 
 
 def wait_for_job(
-    client: TestClient, job_id: str, statuses: tuple[str, ...] = ("done", "failed")
+    client: TestClient,
+    job_id: str,
+    statuses: tuple[str, ...] = ("done", "failed"),
+    prefix: str = "/v1",
 ) -> dict[str, Any]:
     """Poll the job endpoint until it reaches one of `statuses` (bounded)."""
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
-        body = client.get(f"/v1/jobs/{job_id}", headers=AUTH).json()
+        body = client.get(f"{prefix}/jobs/{job_id}", headers=AUTH).json()
         if body["status"] in statuses:
             return body
         time.sleep(0.01)
