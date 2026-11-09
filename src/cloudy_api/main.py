@@ -22,6 +22,7 @@ from .services.downloader import Downloader, VideoDownloader
 from .services.jobs import JobManager
 from .services.lyrics_arranger import LyricsArranger
 from .services.pytubefix_downloader import PytubefixDownloader
+from .services.youtube_api import YouTubeMetadata
 
 log = logging.getLogger("cloudy_api")
 
@@ -41,6 +42,9 @@ class Health(BaseModel):
     pytubefix_version: str
     # The Node.js binary pytubefix bundles to generate PO tokens.
     pytubefix_node: bool
+    # YOUTUBE_DATA_API_KEY is set (metadata via the Data API, not the engines).
+    # Informational only.
+    youtube_api: bool
 
 
 def js_runtime_available(name: str, path: str | None) -> bool:
@@ -77,6 +81,7 @@ def check_dependencies(settings: Settings) -> Health:
         js_runtimes=runtimes,
         pytubefix_version=PYTUBEFIX_VERSION,
         pytubefix_node=os.path.isfile(PYTUBEFIX_NODE_PATH),
+        youtube_api=settings.youtube_data_api_key is not None,
     )
 
 
@@ -95,8 +100,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     health = check_dependencies(app.state.settings)
     runtimes = " ".join(f"{name}={found}" for name, found in health.js_runtimes.items())
     log.info(
-        "startup yt_dlp=%s yt_dlp_ejs=%s ffmpeg=%s %s",
+        "startup yt_dlp=%s yt_dlp_ejs=%s ffmpeg=%s %s youtube_api=%s",
         health.yt_dlp_version, health.yt_dlp_ejs_version, health.ffmpeg, runtimes,
+        health.youtube_api,
     )
     if health.status != "ok":
         log.warning(
@@ -117,6 +123,7 @@ def create_app(
     downloader: VideoDownloader | None = None,
     arranger: LyricsArranger | None = None,
     pytubefix_downloader: VideoDownloader | None = None,
+    metadata: YouTubeMetadata | None = None,
 ) -> FastAPI:
     _configure_logging()
     settings = settings or get_settings()
@@ -136,6 +143,8 @@ def create_app(
     app.state.settings = settings
     app.state.downloader = downloader or Downloader(settings)
     app.state.pytubefix_downloader = pytubefix_downloader or PytubefixDownloader(settings)
+    # Metadata for /v1 and /v2 alike (YouTube Data API, engine probe as fallback).
+    app.state.metadata = metadata or YouTubeMetadata(settings)
     app.state.job_manager = JobManager(
         settings, app.state.downloader, pytubefix_downloader=app.state.pytubefix_downloader
     )

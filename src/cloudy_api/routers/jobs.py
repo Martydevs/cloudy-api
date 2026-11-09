@@ -8,6 +8,7 @@ from ..config import Settings
 from ..deps import (
     DownloaderGetter,
     JobManagerDep,
+    MetadataDep,
     downloader_http_error,
     get_downloader,
     get_pytubefix_downloader,
@@ -16,6 +17,7 @@ from ..schemas import Engine, JobCreate, JobCreated, JobOut, JobStatus, VideoInf
 from ..security import SettingsDep, require_api_key, sign, verify_signature
 from ..services.downloader import DownloaderError, VideoDownloader
 from ..services.jobs import Job, QueueFullError
+from ..services.youtube_api import YouTubeMetadata
 
 _MEDIA_TYPES = {
     ".mp4": "video/mp4",
@@ -32,19 +34,21 @@ def _not_found() -> HTTPException:
 
 
 async def _preflight(
-    downloader: VideoDownloader, video_ids: list[str], settings: Settings
+    metadata: YouTubeMetadata,
+    downloader: VideoDownloader,
+    video_ids: list[str],
+    settings: Settings,
 ) -> dict[str, str]:
-    """Probe every video before queueing; returns ``{video_id: title}``."""
-    limiter = asyncio.Semaphore(settings.probe_concurrency)
+    """Probe every video before queueing; returns ``{video_id: title}``.
 
-    async def probe(video_id: str) -> VideoInfo | DownloaderError:
-        async with limiter:
-            try:
-                return await asyncio.to_thread(downloader.probe, video_id)
-            except DownloaderError as exc:
-                return exc
-
-    results = await asyncio.gather(*(probe(v) for v in video_ids))
+    One YouTube Data API call covers the whole batch; without an API key the
+    engine probes each video (``PROBE_CONCURRENCY`` at a time).
+    """
+    try:
+        by_id = await asyncio.to_thread(metadata.probe_many, video_ids, fallback=downloader)
+    except DownloaderError as exc:
+        raise downloader_http_error(exc) from exc
+    results = [by_id[video_id] for video_id in video_ids]
 
     problems: list[dict[str, str]] = []
     for video_id, result in zip(video_ids, results, strict=True):
@@ -121,6 +125,7 @@ def build_routers(
         body: JobCreate,
         settings: SettingsDep,
         downloader: Annotated[VideoDownloader, Depends(get_engine)],
+        metadata: MetadataDep,
         manager: JobManagerDep,
     ) -> JobCreated:
         if len(body.video_ids) > settings.max_batch:
@@ -134,7 +139,7 @@ def build_routers(
                 status.HTTP_429_TOO_MANY_REQUESTS,
                 detail={"code": "queue_full", "message": "Too many jobs queued, retry later"},
             )
-        titles = await _preflight(downloader, body.video_ids, settings)
+        titles = await _preflight(metadata, downloader, body.video_ids, settings)
         try:
             job = manager.submit(body.video_ids, body.format, titles, engine=engine)
         except QueueFullError as exc:

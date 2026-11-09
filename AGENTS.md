@@ -6,7 +6,12 @@ This FastAPI webservice is part of the Cloudy app product.
 Cloudy app is a webapp to automating and improving workflows for a christian multimedia workteam for producing and managing media files.
 
 # Running project
-Command: `bun run dev`
+- Dev server: `bun run dev` (runs `uv run fastapi dev src/cloudy_api/main.py`)
+- Tests: `bun run test` (`uv run pytest`, coverage gate 90%)
 
 ### Notes
-This project is intended to be deployed as python webservice on `Render.com` to download videos on demand by a Nuxt Fullstack Webapp hosted on Vercel.
+This project is deployed as a Docker web service on Railway (`railway.json`) to download videos on demand for a Nuxt Fullstack Webapp hosted on Vercel.
+
+- `/v1` downloads with yt-dlp, `/v2` with pytubefix (bot-check workaround).
+- Video metadata (`GET /v1|v2/videos/{id}` and the job preflight) comes from the YouTube Data API v3
+  (`services/youtube_api.py`) when `YOUTUBE_DATA_API_KEY` is set; otherwise each engine probes it itself.

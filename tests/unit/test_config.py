@@ -27,6 +27,7 @@ def clean_env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
         "LLM_TIMEOUT_SECONDS",
         "PYTUBEFIX_CLIENT",
         "PYTUBEFIX_PROXY",
+        "YOUTUBE_DATA_API_KEY",
     ):
         monkeypatch.delenv(name, raising=False)
     return monkeypatch
@@ -55,6 +56,7 @@ def test_defaults(clean_env: pytest.MonkeyPatch) -> None:
     assert s.llm_timeout_seconds == 30
     assert s.pytubefix_client == "MWEB"
     assert s.pytubefix_proxy is None
+    assert s.youtube_data_api_key is None
 
 
 def test_env_parsing(clean_env: pytest.MonkeyPatch) -> None:
@@ -114,6 +116,19 @@ def test_empty_optional_values_become_none(clean_env: pytest.MonkeyPatch) -> Non
     assert s.ytdlp_proxy is None
     assert s.ytdlp_cookies_file is None
     assert s.public_base_url is None
+
+
+def test_youtube_data_api_key_from_env(clean_env: pytest.MonkeyPatch) -> None:
+    clean_env.setenv("YOUTUBE_DATA_API_KEY", "AIza-secret")
+    s = Settings(api_key="k", signing_secret="s", _env_file=None)
+    assert s.youtube_data_api_key is not None
+    assert s.youtube_data_api_key.get_secret_value() == "AIza-secret"
+    assert "AIza-secret" not in repr(s)
+
+
+def test_empty_youtube_data_api_key_means_disabled(clean_env: pytest.MonkeyPatch) -> None:
+    clean_env.setenv("YOUTUBE_DATA_API_KEY", " ")
+    assert Settings(api_key="k", signing_secret="s", _env_file=None).youtube_data_api_key is None
 
 
 def test_public_base_url_falls_back_to_render_url(clean_env: pytest.MonkeyPatch) -> None:

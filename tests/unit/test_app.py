@@ -12,6 +12,7 @@ from cloudy_api.main import check_dependencies, create_app
 from cloudy_api.schemas import Engine
 from cloudy_api.services.downloader import Downloader
 from cloudy_api.services.pytubefix_downloader import PytubefixDownloader
+from cloudy_api.services.youtube_api import YouTubeMetadata
 
 ALL_TOOLS = {"ffmpeg", "ffprobe", "deno", "node"}
 
@@ -44,7 +45,25 @@ def test_healthz_all_dependencies(client: TestClient, monkeypatch: pytest.Monkey
         "js_runtimes": {"deno": True, "node": True},
         "pytubefix_version": main_module.PYTUBEFIX_VERSION,
         "pytubefix_node": True,
+        "youtube_api": False,
     }
+
+
+def test_healthz_reports_youtube_api_without_changing_status(
+    make_settings: Callable[..., Settings],
+    fake_downloader: FakeDownloader,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = create_app(make_settings(youtube_data_api_key="yt-key"), downloader=fake_downloader)  # type: ignore[arg-type]
+    with TestClient(app) as client:
+        patch_which(monkeypatch, ALL_TOOLS)
+        r = client.get("/healthz")
+        assert r.status_code == 200
+        assert r.json()["youtube_api"] is True
+        patch_which(monkeypatch, set())
+        r = client.get("/healthz")
+        assert r.status_code == 503
+        assert r.json()["youtube_api"] is True
 
 
 @pytest.mark.parametrize(
@@ -252,6 +271,8 @@ def test_create_app_defaults(
         Engine.YTDLP: app.state.downloader,
         Engine.PYTUBEFIX: app.state.pytubefix_downloader,
     }
+    assert isinstance(app.state.metadata, YouTubeMetadata)
+    assert app.state.metadata.enabled is False
 
 
 def test_check_dependencies_reports_version(
@@ -267,6 +288,7 @@ def test_check_dependencies_reports_version(
         "js_runtimes": {"deno": False, "node": True},
         "pytubefix_version": main_module.PYTUBEFIX_VERSION,
         "pytubefix_node": True,
+        "youtube_api": False,
     }
 
 

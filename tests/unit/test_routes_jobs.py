@@ -4,10 +4,19 @@ import zipfile
 from collections.abc import Callable, Iterator
 from urllib.parse import parse_qs, urlsplit
 
+import httplib2
 import pytest
-from conftest import AUTH, FakeDownloader, video_info, wait_for_job
+from conftest import (
+    AUTH,
+    FakeDownloader,
+    FakeYouTubeApi,
+    video_info,
+    wait_for_job,
+    youtube_item,
+)
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from googleapiclient.errors import HttpError
 
 from cloudy_api.config import Settings
 from cloudy_api.main import create_app
@@ -373,3 +382,58 @@ def test_delete_running_job(
     assert job.cancelled is True
     assert job.status is not JobStatus.DONE
     assert not manager.job_dir(job_id).exists()
+
+
+# ------------------------------------------------ preflight via the Data API
+@pytest.mark.parametrize("prefix", ["/v1", "/v2"])
+def test_api_preflight_uses_one_call(
+    api_client: TestClient,
+    fake_downloader: FakeDownloader,
+    fake_pytubefix: FakeDownloader,
+    fake_youtube: FakeYouTubeApi,
+    prefix: str,
+) -> None:
+    r = api_client.post(f"{prefix}/jobs", headers=AUTH, json={"video_ids": [A, B, C, A], "format": "mp3"})
+    assert r.status_code == 202, r.text
+    body = wait_for_job(api_client, r.json()["job_id"], prefix=prefix)
+    assert body["status"] == "done"
+    assert fake_youtube.calls == [[A, B, C]]
+    assert fake_downloader.probed == fake_pytubefix.probed == []
+    engine = fake_downloader if prefix == "/v1" else fake_pytubefix
+    assert [video_id for video_id, _ in engine.downloaded] == [A, B, C]
+
+
+def test_api_preflight_rejects_unfit_videos(
+    api_client: TestClient, fake_youtube: FakeYouTubeApi
+) -> None:
+    fake_youtube.items[A] = youtube_item(A, duration="PT2H")
+    fake_youtube.missing_ids.add(B)
+    fake_youtube.items[C] = youtube_item(C, live="upcoming", duration="P0D")
+    r = api_client.post("/v1/jobs", headers=AUTH, json={"video_ids": [A, B, C], "format": "mp3"})
+    assert r.status_code == 422
+    detail = r.json()["detail"]
+    assert detail["code"] == "videos_rejected"
+    assert detail["videos"] == [
+        {"video_id": A, "code": "too_long", "message": "Longer than 30 minutes"},
+        {
+            "video_id": B,
+            "code": "unavailable",
+            "message": "Video unavailable (private, deleted or nonexistent)",
+        },
+        {"video_id": C, "code": "live", "message": "Video can't be downloaded"},
+    ]
+
+
+def test_api_preflight_quota_exceeded_is_502(
+    api_client: TestClient, fake_youtube: FakeYouTubeApi
+) -> None:
+    fake_youtube.error = HttpError(
+        httplib2.Response({"status": 403, "reason": "Forbidden"}),
+        b'{"error": {"code": 403, "message": "quota", "errors": [{"reason": "quotaExceeded"}]}}',
+    )
+    r = api_client.post("/v2/jobs", headers=AUTH, json={"video_ids": [A], "format": "mp3"})
+    assert r.status_code == 502
+    assert r.json()["detail"] == {
+        "code": "quota_exceeded",
+        "message": "YouTube Data API quota exceeded",
+    }

@@ -87,6 +87,10 @@ class Settings(BaseSettings):
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     llm_timeout_seconds: float = Field(default=30, gt=0)
 
+    # YouTube Data API v3 key for video metadata (GET /videos, job preflight).
+    # Unset → the download engine probes metadata itself (yt-dlp / pytubefix).
+    youtube_data_api_key: SecretStr | None = None
+
     ytdlp_cookies_file: Path | None = None
     ytdlp_proxy: SecretStr | None = None
     # Comma-separated `runtime[:path]` entries, like yt-dlp's --js-runtimes.
@@ -123,6 +127,7 @@ class Settings(BaseSettings):
 
     @field_validator(
         "ytdlp_cookies_file", "ytdlp_proxy", "pytubefix_proxy", "openrouter_api_key",
+        "youtube_data_api_key",
         mode="before",
     )
     @classmethod

@@ -24,6 +24,7 @@ from cloudy_api.services.downloader import (  # noqa: E402
     DownloadResult,
 )
 from cloudy_api.services.lyrics_arranger import LyricsArranger  # noqa: E402
+from cloudy_api.services.youtube_api import YouTubeMetadata  # noqa: E402
 
 API_KEY = "test-api-key"
 SIGNING_SECRET = "test-signing-secret"
@@ -44,6 +45,8 @@ def make_settings(tmp_path: Path) -> Callable[..., Settings]:
             "signing_secret": SIGNING_SECRET,
             "allowed_origins": ORIGIN,
             "work_dir": tmp_path / "work",
+            # Engine-probe fallback unless a test opts into the Data API.
+            "youtube_data_api_key": None,
             "_env_file": None,
         }
         values.update(overrides)
@@ -118,6 +121,84 @@ class FakeDownloader:
         )
 
 
+def youtube_item(
+    video_id: str,
+    *,
+    title: str | None = None,
+    duration: str | None = "PT1M",
+    live: str = "none",
+    channel: str | None = "Channel",
+    thumbnails: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """A ``videos.list`` item (part=snippet,contentDetails) as the Data API returns it."""
+    snippet: dict[str, Any] = {
+        "title": f"Title {video_id}" if title is None else title,
+        "channelTitle": channel,
+        "liveBroadcastContent": live,
+        "thumbnails": thumbnails
+        if thumbnails is not None
+        else {
+            "default": {"url": f"https://i.ytimg.com/vi/{video_id}/default.jpg"},
+            "high": {"url": f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"},
+        },
+    }
+    details: dict[str, Any] = {"definition": "hd"}
+    if duration is not None:
+        details["duration"] = duration
+    return {"kind": "youtube#video", "id": video_id, "snippet": snippet, "contentDetails": details}
+
+
+class _FakeVideosList:
+    def __init__(self, api: FakeYouTubeApi, part: str, ids: list[str]) -> None:
+        self._api = api
+        self._part = part
+        self._ids = ids
+
+    def execute(self, num_retries: int = 0) -> dict[str, Any]:
+        with self._api.lock:
+            self._api.calls.append(self._ids)
+            self._api.parts.append(self._part)
+        if self._api.error is not None:
+            raise self._api.error
+        return {
+            "kind": "youtube#videoListResponse",
+            "items": [
+                self._api.items.get(i) or youtube_item(i)
+                for i in self._ids
+                if i not in self._api.missing_ids
+            ],
+        }
+
+
+class FakeYouTubeApi:
+    """Stands in for ``googleapiclient.discovery.build``: no network.
+
+    Every id is a 1-minute video unless overridden in ``items``; ids in
+    ``missing_ids`` are left out of the response, like deleted/private videos.
+    """
+
+    def __init__(self) -> None:
+        self.items: dict[str, dict[str, Any]] = {}
+        self.missing_ids: set[str] = set()
+        self.error: BaseException | None = None
+        self.calls: list[list[str]] = []
+        self.parts: list[str] = []
+        self.builds: list[dict[str, Any]] = []
+        self.lock = threading.Lock()
+
+    # build(...) → client; client.videos().list(...).execute()
+    def __call__(self, service: str, version: str, **kwargs: Any) -> FakeYouTubeApi:
+        with self.lock:
+            self.builds.append({"service": service, "version": version, **kwargs})
+        return self
+
+    def videos(self) -> FakeYouTubeApi:
+        return self
+
+    def list(self, *, part: str, id: str) -> _FakeVideosList:
+        return _FakeVideosList(self, part, id.split(","))
+
+
 class FakeChain:
     """Stands in for the OpenRouter structured-output chain: no network."""
 
@@ -170,6 +251,30 @@ def app(
 
 @pytest.fixture
 def client(app: FastAPI) -> Iterator[TestClient]:
+    with TestClient(app) as test_client:
+        yield test_client
+
+
+@pytest.fixture
+def fake_youtube() -> FakeYouTubeApi:
+    return FakeYouTubeApi()
+
+
+@pytest.fixture
+def api_client(
+    make_settings: Callable[..., Settings],
+    fake_downloader: FakeDownloader,
+    fake_pytubefix: FakeDownloader,
+    fake_youtube: FakeYouTubeApi,
+) -> Iterator[TestClient]:
+    """Like ``client``, but metadata comes from a (fake) YouTube Data API."""
+    settings = make_settings(youtube_data_api_key="yt-test-key")
+    app = create_app(
+        settings,
+        downloader=fake_downloader,  # type: ignore[arg-type]
+        pytubefix_downloader=fake_pytubefix,  # type: ignore[arg-type]
+        metadata=YouTubeMetadata(settings, build=fake_youtube),
+    )
     with TestClient(app) as test_client:
         yield test_client
 

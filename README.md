@@ -31,8 +31,8 @@ All `/v1/*` routes need the `X-API-Key` header, except the signed file route.
 
 | Method | Path | Notes |
 |---|---|---|
-| GET | `/healthz` | `{status, yt_dlp_version, yt_dlp_ejs_version, ffmpeg, js_runtime, js_runtimes: {name: found}, pytubefix_version, pytubefix_node}`. No auth. `503` when ffmpeg/ffprobe or yt-dlp-ejs is missing, or none of the enabled JS runtimes is installed. The `pytubefix_*` fields are informational and never cause a `503`. |
-| GET | `/v1/videos/{video_id}` | Title, duration, thumbnail, channel, `available_heights`, `downloadable`, `reason` (`too_long`, `live`, `unknown_duration`). |
+| GET | `/healthz` | `{status, yt_dlp_version, yt_dlp_ejs_version, ffmpeg, js_runtime, js_runtimes: {name: found}, pytubefix_version, pytubefix_node, youtube_api}`. No auth. `503` when ffmpeg/ffprobe or yt-dlp-ejs is missing, or none of the enabled JS runtimes is installed. The `pytubefix_*` and `youtube_api` (`YOUTUBE_DATA_API_KEY` set) fields are informational and never cause a `503`. |
+| GET | `/v1/videos/{video_id}` | Title, duration, thumbnail, channel, `available_heights`, `downloadable`, `reason` (`too_long`, `live`, `unknown_duration`). See [Video metadata](#video-metadata-youtube-data-api). |
 | POST | `/v1/jobs` | `{video_ids: [1..10], format: "mp4_720" \| "mp4_1080" \| "mp3"}` → `202 {job_id, status}`. `422` for bad/too-long/unavailable videos, `429` when the queue is full. |
 | GET | `/v1/jobs/{job_id}` | `status` (`queued\|running\|zipping\|done\|failed\|expired`), `progress`, `items[]`, and once done `download_url`, `filename`, `size_bytes`, `expires_at`. |
 | GET | `/v1/jobs/{job_id}/file?exp=…&sig=…` | Streams the file as an attachment. Signature-verified, no API key. `403` bad/expired link, `410` file expired. |
@@ -98,6 +98,28 @@ Lyrics stay under `/v1` only.
 - pytubefix breaks when YouTube changes, like yt-dlp. Bump it with
   `uv lock --upgrade-package pytubefix`.
 
+## Video metadata (YouTube Data API)
+
+With `YOUTUBE_DATA_API_KEY` set, `GET /v1|v2/videos/{id}` and the job preflight
+(`POST /v1|v2/jobs`) read metadata from the official
+[YouTube Data API v3](https://developers.google.com/youtube/v3/docs/videos/list)
+instead of running a full yt-dlp/pytubefix extraction, which is slow and is what
+trips YouTube's bot check on Railway. Downloads still use the engine of each prefix.
+
+- One `videos.list` call (1 quota unit; 10,000/day by default) covers up to 50 ids, so
+  a whole job is one call. Results are cached for 10 minutes.
+- The response shape is unchanged, but **`available_heights` is always `[]`**: the API
+  only says HD/SD. The real height comes back per item as `actual_height`.
+- Deleted, private and nonexistent videos all answer `422 unavailable` (the API can't
+  tell them apart). Live and upcoming streams → `downloadable: false, reason: "live"`.
+- API failures are `502`: `quota_exceeded` when the daily quota is spent,
+  `metadata_unavailable` otherwise (bad key, API disabled, network).
+- Without the key, each engine probes metadata itself as before (`PROBE_CONCURRENCY`
+  at a time). `/healthz` reports which mode is active in `youtube_api`.
+
+Getting a key: Google Cloud console → APIs & Services → enable **YouTube Data API v3**
+→ Credentials → Create API key → restrict it to that API.
+
 ## Configuration
 
 Copy `.env.example` to `.env`.
@@ -114,7 +136,8 @@ Copy `.env.example` to `.env`.
 | `MAX_DURATION_SECONDS` | `1800` | |
 | `FILE_TTL_MINUTES` | `30` | Files deleted after this; the record answers `expired` for another TTL. |
 | `SIGNED_URL_TTL_SECONDS` | `600` | |
-| `PROBE_CONCURRENCY` | `3` | Parallel metadata probes on job creation. Lower to `1` if Render runs out of memory. |
+| `YOUTUBE_DATA_API_KEY` | — | YouTube Data API v3 key for video metadata. Unset → the engine probes metadata itself. See [Video metadata](#video-metadata-youtube-data-api). |
+| `PROBE_CONCURRENCY` | `3` | Parallel engine metadata probes on job creation, only used without `YOUTUBE_DATA_API_KEY`. Lower to `1` if memory is tight. |
 | `OPENROUTER_API_KEY` | — | Enables the LLM slide arrangement (`OPENROUTER_APIKEY` also works). Unset → fallback grouping. |
 | `OPENROUTER_MODEL` | `@preset/lyrics-generator` | OpenRouter preset (or model) that supports tool calling. The preset holds the system prompt; the API sends only the numbered lyrics. |
 | `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | |
@@ -368,6 +391,7 @@ which the image's `CMD` already uses.
    | `ALLOWED_ORIGINS` | the Vercel origin(s), comma-separated |
    | `PUBLIC_BASE_URL` | `https://${{RAILWAY_PUBLIC_DOMAIN}}` |
    | `OPENROUTER_API_KEY` | optional (lyrics LLM arrangement) |
+   | `YOUTUBE_DATA_API_KEY` | recommended: video metadata without the bot check (see [Video metadata](#video-metadata-youtube-data-api)) |
 
    The limits in `.env.example` all have defaults; override only what you need.
 3. Settings → Networking → **Generate Domain**.

@@ -6,6 +6,7 @@ from fastapi import Depends, HTTPException, Request
 from .services.downloader import DownloaderError, VideoDownloader
 from .services.jobs import JobManager
 from .services.lyrics_arranger import LyricsArranger
+from .services.youtube_api import YouTubeMetadata
 
 
 def get_downloader(request: Request) -> VideoDownloader:
@@ -19,6 +20,11 @@ def get_pytubefix_downloader(request: Request) -> VideoDownloader:
     return request.app.state.pytubefix_downloader
 
 
+def get_metadata(request: Request) -> YouTubeMetadata:
+    # Shared by /v1 and /v2; falls back to the route's engine without an API key.
+    return request.app.state.metadata
+
+
 def get_job_manager(request: Request) -> JobManager:
     return request.app.state.job_manager
 
@@ -30,6 +36,7 @@ def get_arranger(request: Request) -> LyricsArranger:
 DownloaderGetter = Callable[[Request], VideoDownloader]
 
 DownloaderDep = Annotated[VideoDownloader, Depends(get_downloader)]
+MetadataDep = Annotated[YouTubeMetadata, Depends(get_metadata)]
 JobManagerDep = Annotated[JobManager, Depends(get_job_manager)]
 ArrangerDep = Annotated[LyricsArranger, Depends(get_arranger)]
 

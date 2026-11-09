@@ -1,4 +1,4 @@
-from conftest import AUTH, FakeDownloader, video_info
+from conftest import AUTH, FakeDownloader, FakeYouTubeApi, video_info, youtube_item
 from fastapi.testclient import TestClient
 
 from cloudy_api.services.downloader import DownloaderError
@@ -59,3 +59,54 @@ def test_get_video_server_error_is_502(client: TestClient, fake_downloader: Fake
     r = client.get(f"/v1/videos/{VIDEO_ID}", headers=AUTH)
     assert r.status_code == 502
     assert r.json()["detail"]["code"] == "bot_check"
+
+
+# ------------------------------------------------------- YouTube Data API
+def test_api_metadata_keeps_the_response_shape(
+    api_client: TestClient,
+    fake_downloader: FakeDownloader,
+    fake_pytubefix: FakeDownloader,
+    fake_youtube: FakeYouTubeApi,
+) -> None:
+    fake_youtube.items[VIDEO_ID] = youtube_item(
+        VIDEO_ID, title="Never Gonna Give You Up", duration="PT3M33S", channel="Rick Astley"
+    )
+    v1 = api_client.get(f"/v1/videos/{VIDEO_ID}", headers=AUTH)
+    v2 = api_client.get(f"/v2/videos/{VIDEO_ID}", headers=AUTH)
+    assert v1.status_code == v2.status_code == 200
+    assert v1.json() == v2.json() == {
+        "video_id": VIDEO_ID,
+        "title": "Never Gonna Give You Up",
+        "duration": 213,
+        "thumbnail": f"https://i.ytimg.com/vi/{VIDEO_ID}/hqdefault.jpg",
+        "channel": "Rick Astley",
+        "available_heights": [],
+        "downloadable": True,
+        "reason": None,
+    }
+    # Same keys, in the same order, as the engine-backed response.
+    assert list(v1.json()) == list(video_info(VIDEO_ID).model_dump())
+    assert fake_downloader.probed == fake_pytubefix.probed == []
+    assert fake_youtube.calls == [[VIDEO_ID]]  # the second request hit the cache
+
+
+def test_api_live_video_is_not_downloadable(
+    api_client: TestClient, fake_youtube: FakeYouTubeApi
+) -> None:
+    fake_youtube.items[VIDEO_ID] = youtube_item(VIDEO_ID, live="live", duration="P0D")
+    body = api_client.get(f"/v1/videos/{VIDEO_ID}", headers=AUTH).json()
+    assert (body["downloadable"], body["reason"], body["duration"]) == (False, "live", None)
+
+
+def test_api_missing_video_is_422(api_client: TestClient, fake_youtube: FakeYouTubeApi) -> None:
+    fake_youtube.missing_ids.add(VIDEO_ID)
+    r = api_client.get(f"/v2/videos/{VIDEO_ID}", headers=AUTH)
+    assert r.status_code == 422
+    assert r.json()["detail"]["code"] == "unavailable"
+
+
+def test_api_unreachable_is_502(api_client: TestClient, fake_youtube: FakeYouTubeApi) -> None:
+    fake_youtube.error = TimeoutError()
+    r = api_client.get(f"/v1/videos/{VIDEO_ID}", headers=AUTH)
+    assert r.status_code == 502
+    assert r.json()["detail"]["code"] == "metadata_unavailable"
