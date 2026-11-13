@@ -1,4 +1,3 @@
-from collections.abc import Callable
 from typing import Annotated
 
 from fastapi import Depends, HTTPException, Request
@@ -15,13 +14,8 @@ def get_downloader(request: Request) -> VideoDownloader:
     return request.app.state.downloader
 
 
-def get_pytubefix_downloader(request: Request) -> VideoDownloader:
-    # Engine behind /v2 (temporary bot-check workaround).
-    return request.app.state.pytubefix_downloader
-
-
 def get_metadata(request: Request) -> YouTubeMetadata:
-    # Shared by /v1 and /v2; falls back to the route's engine without an API key.
+    # Falls back to the download engine's own probe without an API key.
     return request.app.state.metadata
 
 
@@ -32,8 +26,6 @@ def get_job_manager(request: Request) -> JobManager:
 def get_arranger(request: Request) -> LyricsArranger:
     return request.app.state.arranger
 
-
-DownloaderGetter = Callable[[Request], VideoDownloader]
 
 DownloaderDep = Annotated[VideoDownloader, Depends(get_downloader)]
 MetadataDep = Annotated[YouTubeMetadata, Depends(get_metadata)]

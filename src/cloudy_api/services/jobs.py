@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..config import Settings
-from ..schemas import Engine, ErrorInfo, Format, ItemOut, ItemStatus, JobStatus
+from ..schemas import ErrorInfo, Format, ItemOut, ItemStatus, JobStatus
 from .downloader import Cancelled, DownloaderError, VideoDownloader
 
 log = logging.getLogger(__name__)
@@ -70,7 +70,6 @@ class Job:
     format: Format
     items: list[JobItem]
     created_at: float
-    engine: Engine = Engine.YTDLP
     status: JobStatus = JobStatus.QUEUED
     finished_at: float | None = None
     file_path: Path | None = None
@@ -91,7 +90,7 @@ class Job:
 
 @dataclass
 class JobStore:
-    """Dict of jobs guarded by a *threading* lock: yt-dlp progress hooks
+    """Dict of jobs guarded by a *threading* lock: download progress callbacks
     write into it from worker threads."""
 
     lock: threading.Lock = field(default_factory=threading.Lock)
@@ -120,7 +119,6 @@ class JobManager:
         settings: Settings,
         downloader: VideoDownloader,
         *,
-        pytubefix_downloader: VideoDownloader | None = None,
         store: JobStore | None = None,
         now: Callable[[], float] = time.time,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
@@ -128,11 +126,6 @@ class JobManager:
         self.settings = settings
         self._sleep = sleep
         self.downloader = downloader
-        # One queue and one concurrency limit for every engine; each job picks
-        # its downloader. Without a pytubefix downloader, v2 jobs can't exist.
-        self.downloaders: dict[Engine, VideoDownloader] = {Engine.YTDLP: downloader}
-        if pytubefix_downloader is not None:
-            self.downloaders[Engine.PYTUBEFIX] = pytubefix_downloader
         self.store = store or JobStore()
         self.now = now
         self.queue: asyncio.Queue[str] = asyncio.Queue(maxsize=settings.max_queue)
@@ -176,18 +169,13 @@ class JobManager:
         video_ids: list[str],
         fmt: Format,
         titles: dict[str, str] | None = None,
-        *,
-        engine: Engine = Engine.YTDLP,
     ) -> Job:
-        if engine not in self.downloaders:
-            raise ValueError(f"no downloader configured for engine {engine.value}")
         titles = titles or {}
         job = Job(
             id=uuid.uuid4().hex,
             format=fmt,
             items=[JobItem(video_id=v, title=titles.get(v)) for v in video_ids],
             created_at=self.now(),
-            engine=engine,
         )
         try:
             self.queue.put_nowait(job.id)
@@ -195,8 +183,8 @@ class JobManager:
             raise QueueFullError() from exc
         self.store.add(job)
         log.info(
-            "job.created job_id=%s engine=%s format=%s items=%d queued=%d",
-            job.id, engine.value, fmt.value, len(job.items), self.queue.qsize(),
+            "job.created job_id=%s format=%s items=%d queued=%d",
+            job.id, fmt.value, len(job.items), self.queue.qsize(),
         )
         return job
 
@@ -304,7 +292,7 @@ class JobManager:
         log.info("item.started job_id=%s video_id=%s", job.id, item.video_id)
         try:
             result = await asyncio.to_thread(
-                self.downloaders[job.engine].download,
+                self.downloader.download,
                 item.video_id,
                 job.format,
                 dest,

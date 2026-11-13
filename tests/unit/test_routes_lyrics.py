@@ -10,7 +10,7 @@ from cloudy_api.config import Settings
 from cloudy_api.main import create_app
 from cloudy_api.services.pptx_builder import PPTX_MEDIA_TYPE
 
-URL = "/v1/lyrics/pptx"
+URL = "/api/lyrics/pptx"
 HTML = """
 <h1>De Buenas Part</h1>
 <div class="lyric-original">

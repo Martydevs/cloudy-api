@@ -3,44 +3,48 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Path
 
-from ..deps import (
-    DownloaderGetter,
-    MetadataDep,
-    downloader_http_error,
-    get_downloader,
-    get_pytubefix_downloader,
-)
+from ..deps import DownloaderDep, MetadataDep, downloader_http_error
 from ..schemas import VIDEO_ID_PATTERN, VideoInfo
 from ..security import require_api_key
-from ..services.downloader import DownloaderError, VideoDownloader
+from ..services.downloader import DownloaderError
+from .responses import ENGINE_FAILED, UNAUTHORIZED, error
+
+router = APIRouter(
+    prefix="/videos",
+    tags=["videos"],
+    dependencies=[Depends(require_api_key)],
+    responses=UNAUTHORIZED,
+)
 
 
-def build_router(prefix: str, get_engine: DownloaderGetter, tag: str = "videos") -> APIRouter:
-    """Video metadata routes under ``{prefix}/videos``.
+@router.get(
+    "/{video_id}",
+    summary="Get video metadata",
+    responses={
+        422: error(
+            "The video can't be used: `private`, `unavailable`, `age_restricted`, "
+            "`members_only`, `geo_restricted`, `live`, … (or a malformed id)."
+        ),
+        **ENGINE_FAILED,
+    },
+)
+async def get_video(
+    video_id: Annotated[
+        str,
+        Path(pattern=VIDEO_ID_PATTERN, description="11-character YouTube video id."),
+    ],
+    downloader: DownloaderDep,
+    metadata: MetadataDep,
+) -> VideoInfo:
+    """Title, duration, thumbnail and channel of a YouTube video, and whether it
+    can be downloaded (`downloadable` / `reason`: `too_long`, `live`,
+    `unknown_duration`).
 
-    Metadata comes from the YouTube Data API; ``get_engine`` is only used when
-    no API key is configured.
+    Comes from the YouTube Data API when `YOUTUBE_DATA_API_KEY` is set; then
+    `available_heights` is always `[]`. Without the key, pytubefix probes the
+    video itself. Results are cached for 10 minutes.
     """
-    router = APIRouter(
-        prefix=f"{prefix}/videos",
-        tags=[tag],
-        dependencies=[Depends(require_api_key)],
-    )
-
-    @router.get("/{video_id}")
-    async def get_video(
-        video_id: Annotated[str, Path(pattern=VIDEO_ID_PATTERN)],
-        downloader: Annotated[VideoDownloader, Depends(get_engine)],
-        metadata: MetadataDep,
-    ) -> VideoInfo:
-        try:
-            return await asyncio.to_thread(metadata.probe, video_id, fallback=downloader)
-        except DownloaderError as exc:
-            raise downloader_http_error(exc) from exc
-
-    return router
-
-
-router = build_router("/v1", get_downloader)
-# /v2: same contract, pytubefix instead of yt-dlp (temporary bot-check workaround).
-v2_router = build_router("/v2", get_pytubefix_downloader, tag="videos v2")
+    try:
+        return await asyncio.to_thread(metadata.probe, video_id, fallback=downloader)
+    except DownloaderError as exc:
+        raise downloader_http_error(exc) from exc

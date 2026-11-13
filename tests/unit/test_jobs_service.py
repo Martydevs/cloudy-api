@@ -9,7 +9,7 @@ import pytest
 from conftest import FakeDownloader
 
 from cloudy_api.config import Settings
-from cloudy_api.schemas import Engine, Format, ItemStatus, JobStatus
+from cloudy_api.schemas import Format, ItemStatus, JobStatus
 from cloudy_api.services.downloader import DownloaderError
 from cloudy_api.services.jobs import (
     Job,
@@ -502,30 +502,3 @@ async def test_cleanup_loop_sweeps_and_survives_errors(
     finally:
         await manager.stop()
     assert calls == 2  # first failure was logged, loop kept going
-
-
-# ------------------------------------------------------------------ engines
-async def test_jobs_run_on_their_engine(
-    make_settings: Callable[..., Settings], fake_downloader: FakeDownloader, clock: Clock
-) -> None:
-    pytubefix = FakeDownloader()
-    manager = JobManager(
-        make_settings(), fake_downloader, pytubefix_downloader=pytubefix, now=clock  # type: ignore[arg-type]
-    )
-    v1 = manager.submit([A], Format.MP3)
-    v2 = manager.submit([B], Format.MP4_720, engine=Engine.PYTUBEFIX)
-    assert (v1.engine, v2.engine) == (Engine.YTDLP, Engine.PYTUBEFIX)
-
-    await manager.run_job(v1)
-    await manager.run_job(v2)
-
-    assert fake_downloader.downloaded == [(A, Format.MP3)]
-    assert pytubefix.downloaded == [(B, Format.MP4_720)]
-    assert v1.status is JobStatus.DONE and v2.status is JobStatus.DONE
-
-
-async def test_submit_rejects_unconfigured_engine(manager: JobManager) -> None:
-    with pytest.raises(ValueError, match="pytubefix"):
-        manager.submit([A], Format.MP3, engine=Engine.PYTUBEFIX)
-    assert manager.queue.qsize() == 0
-    assert manager.store.snapshot() == []

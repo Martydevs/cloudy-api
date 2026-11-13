@@ -1,7 +1,7 @@
 [project]
 name = "cloudy-api"
 version = "0.1.0"
-description = "On-demand YouTube download API (yt-dlp + ffmpeg) for the Cloudy Nuxt app"
+description = "On-demand YouTube download API (pytubefix + ffmpeg) for the Cloudy Nuxt app"
 readme = "README.md"
 authors = [
     { name = "Martydevs", email = "tmdev64@gmail.com" }
@@ -18,7 +18,6 @@ dependencies = [
     "python-pptx>=1.0.2",
     "pytubefix>=11.2.1",
     "scalar-fastapi>=1.9.1",
-    "yt-dlp[default]>=2026.10.26",
 ]
 
 [project.scripts]
@@ -40,7 +39,7 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra --strict-markers --cov=cloudy_api --cov-branch --cov-report=term-missing --cov-report=xml"
-markers = ["integration: real yt-dlp/ffmpeg/network; excluded by default"]
+markers = ["integration: real pytubefix/ffmpeg/network; excluded by default"]
 
 [tool.coverage.run]
 source = ["cloudy_api"]

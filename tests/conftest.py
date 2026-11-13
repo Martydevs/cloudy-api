@@ -76,7 +76,7 @@ def video_info(video_id: str, **overrides: Any) -> VideoInfo:
 
 
 class FakeDownloader:
-    """Stands in for services.downloader.Downloader: no network, no ffmpeg."""
+    """Stands in for the download engine (PytubefixDownloader): no network, no ffmpeg."""
 
     def __init__(self) -> None:
         self.probe_results: dict[str, VideoInfo | DownloaderError] = {}
@@ -224,12 +224,6 @@ def fake_downloader() -> FakeDownloader:
 
 
 @pytest.fixture
-def fake_pytubefix() -> FakeDownloader:
-    """The /v2 engine's stand-in, separate from the yt-dlp one."""
-    return FakeDownloader()
-
-
-@pytest.fixture
 def fake_chain() -> FakeChain:
     return FakeChain()
 
@@ -238,14 +232,12 @@ def fake_chain() -> FakeChain:
 def app(
     settings: Settings,
     fake_downloader: FakeDownloader,
-    fake_pytubefix: FakeDownloader,
     fake_chain: FakeChain,
 ) -> FastAPI:
     return create_app(
         settings,
         downloader=fake_downloader,  # type: ignore[arg-type]
         arranger=LyricsArranger(settings, chain=fake_chain),
-        pytubefix_downloader=fake_pytubefix,  # type: ignore[arg-type]
     )
 
 
@@ -264,7 +256,6 @@ def fake_youtube() -> FakeYouTubeApi:
 def api_client(
     make_settings: Callable[..., Settings],
     fake_downloader: FakeDownloader,
-    fake_pytubefix: FakeDownloader,
     fake_youtube: FakeYouTubeApi,
 ) -> Iterator[TestClient]:
     """Like ``client``, but metadata comes from a (fake) YouTube Data API."""
@@ -272,7 +263,6 @@ def api_client(
     app = create_app(
         settings,
         downloader=fake_downloader,  # type: ignore[arg-type]
-        pytubefix_downloader=fake_pytubefix,  # type: ignore[arg-type]
         metadata=YouTubeMetadata(settings, build=fake_youtube),
     )
     with TestClient(app) as test_client:
@@ -283,12 +273,11 @@ def wait_for_job(
     client: TestClient,
     job_id: str,
     statuses: tuple[str, ...] = ("done", "failed"),
-    prefix: str = "/v1",
 ) -> dict[str, Any]:
     """Poll the job endpoint until it reaches one of `statuses` (bounded)."""
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
-        body = client.get(f"{prefix}/jobs/{job_id}", headers=AUTH).json()
+        body = client.get(f"/api/jobs/{job_id}", headers=AUTH).json()
         if body["status"] in statuses:
             return body
         time.sleep(0.01)

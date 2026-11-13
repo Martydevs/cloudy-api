@@ -28,7 +28,7 @@ A, B, C = "aaaaaaaaaaa", "bbbbbbbbbbb", "ccccccccccc"
 
 
 def create(client: TestClient, ids: list[str], fmt: str = "mp3") -> dict:
-    r = client.post("/v1/jobs", headers=AUTH, json={"video_ids": ids, "format": fmt})
+    r = client.post("/api/jobs", headers=AUTH, json={"video_ids": ids, "format": fmt})
     assert r.status_code == 202, r.text
     return r.json()
 
@@ -47,7 +47,7 @@ def test_create_job(client: TestClient, fake_downloader: FakeDownloader) -> None
 
 
 def test_create_job_requires_api_key(client: TestClient) -> None:
-    r = client.post("/v1/jobs", json={"video_ids": [A], "format": "mp3"})
+    r = client.post("/api/jobs", json={"video_ids": [A], "format": "mp3"})
     assert r.status_code == 401
 
 
@@ -61,13 +61,13 @@ def test_create_job_requires_api_key(client: TestClient) -> None:
     ],
 )
 def test_create_job_validation(client: TestClient, payload: dict) -> None:
-    r = client.post("/v1/jobs", headers=AUTH, json=payload)
+    r = client.post("/api/jobs", headers=AUTH, json=payload)
     assert r.status_code == 422
 
 
 def test_create_job_batch_limit(client: TestClient, fake_downloader: FakeDownloader) -> None:
     ids = [f"{i:011d}" for i in range(11)]
-    r = client.post("/v1/jobs", headers=AUTH, json={"video_ids": ids, "format": "mp3"})
+    r = client.post("/api/jobs", headers=AUTH, json={"video_ids": ids, "format": "mp3"})
     assert r.status_code == 422
     assert r.json()["detail"]["code"] == "batch_too_large"
     assert fake_downloader.probed == []
@@ -82,7 +82,7 @@ def test_create_job_rejects_unfit_videos(
     fake_downloader.probe_results[B] = DownloaderError("private", "Private video")
     fake_downloader.probe_results[C] = video_info(C, downloadable=False, reason="live")
 
-    r = client.post("/v1/jobs", headers=AUTH, json={"video_ids": [A, B, C], "format": "mp3"})
+    r = client.post("/api/jobs", headers=AUTH, json={"video_ids": [A, B, C], "format": "mp3"})
 
     assert r.status_code == 422
     detail = r.json()["detail"]
@@ -98,7 +98,7 @@ def test_create_job_reports_unknown_reason(
     client: TestClient, fake_downloader: FakeDownloader
 ) -> None:
     fake_downloader.probe_results[A] = video_info(A, downloadable=False, reason=None)
-    r = client.post("/v1/jobs", headers=AUTH, json={"video_ids": [A], "format": "mp3"})
+    r = client.post("/api/jobs", headers=AUTH, json={"video_ids": [A], "format": "mp3"})
     assert r.json()["detail"]["videos"][0]["code"] == "not_downloadable"
 
 
@@ -106,7 +106,7 @@ def test_create_job_server_side_probe_error_is_502(
     client: TestClient, fake_downloader: FakeDownloader
 ) -> None:
     fake_downloader.probe_results[B] = DownloaderError("bot_check", "bot", client_error=False)
-    r = client.post("/v1/jobs", headers=AUTH, json={"video_ids": [A, B], "format": "mp3"})
+    r = client.post("/api/jobs", headers=AUTH, json={"video_ids": [A, B], "format": "mp3"})
     assert r.status_code == 502
     assert r.json()["detail"]["code"] == "bot_check"
 
@@ -133,7 +133,7 @@ def test_create_job_queue_full_is_429(
     create(client, [B])  # fills the single queue slot
     probes_before = len(fake_downloader.probed)
 
-    r = client.post("/v1/jobs", headers=AUTH, json={"video_ids": [C], "format": "mp3"})
+    r = client.post("/api/jobs", headers=AUTH, json={"video_ids": [C], "format": "mp3"})
 
     assert r.status_code == 429
     assert r.json()["detail"]["code"] == "queue_full"
@@ -156,7 +156,7 @@ def test_create_job_queue_fills_during_probe(
         return result
 
     fake_downloader.probe = probe_then_fill  # type: ignore[method-assign]
-    r = client.post("/v1/jobs", headers=AUTH, json={"video_ids": [C], "format": "mp3"})
+    r = client.post("/api/jobs", headers=AUTH, json={"video_ids": [C], "format": "mp3"})
     assert r.status_code == 429
 
 
@@ -184,7 +184,7 @@ def test_single_job_lifecycle(client: TestClient, settings: Settings) -> None:
     assert body["expires_at"] == job.finished_at + settings.file_ttl_seconds
 
     url = body["download_url"]
-    assert url.startswith(f"http://testserver/v1/jobs/{job_id}/file?")
+    assert url.startswith(f"http://testserver/api/jobs/{job_id}/file?")
     query = parse_qs(urlsplit(url).query)
     assert set(query) == {"exp", "sig"}
 
@@ -240,7 +240,7 @@ def test_running_job_reports_progress(
     client, gate = busy_client
     job_id = create(client, [A])["job_id"]
     assert fake_downloader.started.wait(timeout=5)
-    body = client.get(f"/v1/jobs/{job_id}", headers=AUTH).json()
+    body = client.get(f"/api/jobs/{job_id}", headers=AUTH).json()
     assert body["status"] == "running"
     assert body["items"][0]["status"] == "running"
     assert body["download_url"] is None
@@ -249,13 +249,13 @@ def test_running_job_reports_progress(
 
 
 def test_get_job_not_found(client: TestClient) -> None:
-    r = client.get("/v1/jobs/missing", headers=AUTH)
+    r = client.get("/api/jobs/missing", headers=AUTH)
     assert r.status_code == 404
     assert r.json()["detail"]["code"] == "not_found"
 
 
 def test_get_job_requires_api_key(client: TestClient) -> None:
-    assert client.get("/v1/jobs/missing").status_code == 401
+    assert client.get("/api/jobs/missing").status_code == 401
 
 
 def test_download_url_uses_public_base_url(
@@ -268,7 +268,7 @@ def test_download_url_uses_public_base_url(
     with TestClient(app) as client:
         body = wait_for_job(client, create(client, [A])["job_id"])
     assert body["download_url"].startswith(
-        f"https://cloudy.onrender.com/v1/jobs/{body['job_id']}/file?exp="
+        f"https://cloudy.onrender.com/api/jobs/{body['job_id']}/file?exp="
     )
 
 
@@ -289,18 +289,18 @@ def test_file_rejects_expired_link(
     client: TestClient, done_job: dict, settings: Settings
 ) -> None:
     exp, sig = sign(settings, done_job["job_id"], now=lambda: 0)
-    r = client.get(f"/v1/jobs/{done_job['job_id']}/file?exp={exp}&sig={sig}")
+    r = client.get(f"/api/jobs/{done_job['job_id']}/file?exp={exp}&sig={sig}")
     assert r.status_code == 403
     assert r.json()["detail"]["code"] == "link_expired"
 
 
 def test_file_requires_signature_params(client: TestClient, done_job: dict) -> None:
-    assert client.get(f"/v1/jobs/{done_job['job_id']}/file").status_code == 422
+    assert client.get(f"/api/jobs/{done_job['job_id']}/file").status_code == 422
 
 
 def test_file_for_unknown_job(client: TestClient, settings: Settings) -> None:
     exp, sig = sign(settings, "f" * 32)
-    assert client.get(f"/v1/jobs/{'f' * 32}/file?exp={exp}&sig={sig}").status_code == 404
+    assert client.get(f"/api/jobs/{'f' * 32}/file?exp={exp}&sig={sig}").status_code == 404
 
 
 def test_file_for_expired_job_is_410(
@@ -314,7 +314,7 @@ def test_file_for_expired_job_is_410(
     r = client.get(relative(done_job["download_url"]))
     assert r.status_code == 410
     assert r.json()["detail"]["code"] == "expired"
-    body = client.get(f"/v1/jobs/{done_job['job_id']}", headers=AUTH).json()
+    body = client.get(f"/api/jobs/{done_job['job_id']}", headers=AUTH).json()
     assert body["status"] == "expired"
     assert body["download_url"] is None
 
@@ -328,7 +328,7 @@ def test_file_not_ready(
     job_id = create(client, [A])["job_id"]
     assert fake_downloader.started.wait(timeout=5)
     exp, sig = sign(make_settings(), job_id)
-    assert client.get(f"/v1/jobs/{job_id}/file?exp={exp}&sig={sig}").status_code == 404
+    assert client.get(f"/api/jobs/{job_id}/file?exp={exp}&sig={sig}").status_code == 404
 
 
 def test_file_missing_on_disk(client: TestClient, done_job: dict, app: FastAPI) -> None:
@@ -354,16 +354,16 @@ def test_delete_job(client: TestClient, done_job: dict, app: FastAPI) -> None:
     job_dir = app.state.job_manager.job_dir(job_id)
     assert job_dir.exists()
 
-    r = client.delete(f"/v1/jobs/{job_id}", headers=AUTH)
+    r = client.delete(f"/api/jobs/{job_id}", headers=AUTH)
 
     assert r.status_code == 204
     assert not job_dir.exists()
-    assert client.get(f"/v1/jobs/{job_id}", headers=AUTH).status_code == 404
-    assert client.delete(f"/v1/jobs/{job_id}", headers=AUTH).status_code == 404
+    assert client.get(f"/api/jobs/{job_id}", headers=AUTH).status_code == 404
+    assert client.delete(f"/api/jobs/{job_id}", headers=AUTH).status_code == 404
 
 
 def test_delete_requires_api_key(client: TestClient) -> None:
-    assert client.delete("/v1/jobs/whatever").status_code == 401
+    assert client.delete("/api/jobs/whatever").status_code == 401
 
 
 def test_delete_running_job(
@@ -375,7 +375,7 @@ def test_delete_running_job(
     manager = client.app.state.job_manager  # type: ignore[attr-defined]
     job = manager.get(job_id)
 
-    assert client.delete(f"/v1/jobs/{job_id}", headers=AUTH).status_code == 204
+    assert client.delete(f"/api/jobs/{job_id}", headers=AUTH).status_code == 204
     gate.set()
     client.portal.call(manager.queue.join)  # type: ignore[union-attr]
 
@@ -385,22 +385,18 @@ def test_delete_running_job(
 
 
 # ------------------------------------------------ preflight via the Data API
-@pytest.mark.parametrize("prefix", ["/v1", "/v2"])
 def test_api_preflight_uses_one_call(
     api_client: TestClient,
     fake_downloader: FakeDownloader,
-    fake_pytubefix: FakeDownloader,
     fake_youtube: FakeYouTubeApi,
-    prefix: str,
 ) -> None:
-    r = api_client.post(f"{prefix}/jobs", headers=AUTH, json={"video_ids": [A, B, C, A], "format": "mp3"})
+    r = api_client.post("/api/jobs", headers=AUTH, json={"video_ids": [A, B, C, A], "format": "mp3"})
     assert r.status_code == 202, r.text
-    body = wait_for_job(api_client, r.json()["job_id"], prefix=prefix)
+    body = wait_for_job(api_client, r.json()["job_id"])
     assert body["status"] == "done"
     assert fake_youtube.calls == [[A, B, C]]
-    assert fake_downloader.probed == fake_pytubefix.probed == []
-    engine = fake_downloader if prefix == "/v1" else fake_pytubefix
-    assert [video_id for video_id, _ in engine.downloaded] == [A, B, C]
+    assert fake_downloader.probed == []
+    assert [video_id for video_id, _ in fake_downloader.downloaded] == [A, B, C]
 
 
 def test_api_preflight_rejects_unfit_videos(
@@ -409,7 +405,7 @@ def test_api_preflight_rejects_unfit_videos(
     fake_youtube.items[A] = youtube_item(A, duration="PT2H")
     fake_youtube.missing_ids.add(B)
     fake_youtube.items[C] = youtube_item(C, live="upcoming", duration="P0D")
-    r = api_client.post("/v1/jobs", headers=AUTH, json={"video_ids": [A, B, C], "format": "mp3"})
+    r = api_client.post("/api/jobs", headers=AUTH, json={"video_ids": [A, B, C], "format": "mp3"})
     assert r.status_code == 422
     detail = r.json()["detail"]
     assert detail["code"] == "videos_rejected"
@@ -431,7 +427,7 @@ def test_api_preflight_quota_exceeded_is_502(
         httplib2.Response({"status": 403, "reason": "Forbidden"}),
         b'{"error": {"code": 403, "message": "quota", "errors": [{"reason": "quotaExceeded"}]}}',
     )
-    r = api_client.post("/v2/jobs", headers=AUTH, json={"video_ids": [A], "format": "mp3"})
+    r = api_client.post("/api/jobs", headers=AUTH, json={"video_ids": [A], "format": "mp3"})
     assert r.status_code == 502
     assert r.json()["detail"] == {
         "code": "quota_exceeded",

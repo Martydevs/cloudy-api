@@ -15,7 +15,7 @@ from cloudy_api.services import lyrics_pptx
 from cloudy_api.services.lyrics_arranger import LyricsArranger
 from cloudy_api.services.lyrics_pptx import unique_name
 
-URL = "/v1/lyrics/pptx/batch"
+URL = "/api/lyrics/pptx/batch"
 BAD_HTML = "<div>nothing here</div><script>x</script><p></p>"
 
 

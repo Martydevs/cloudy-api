@@ -1,5 +1,6 @@
 import logging
 from collections.abc import Callable
+from pathlib import Path
 
 import pytest
 from conftest import ORIGIN, FakeDownloader
@@ -9,46 +10,51 @@ from cloudy_api import cli
 from cloudy_api import main as main_module
 from cloudy_api.config import Settings
 from cloudy_api.main import check_dependencies, create_app
-from cloudy_api.schemas import Engine
-from cloudy_api.services.downloader import Downloader
 from cloudy_api.services.pytubefix_downloader import PytubefixDownloader
 from cloudy_api.services.youtube_api import YouTubeMetadata
 
-ALL_TOOLS = {"ffmpeg", "ffprobe", "deno", "node"}
+FFMPEG_TOOLS = {"ffmpeg", "ffprobe"}
 
 
-def patch_which(monkeypatch: pytest.MonkeyPatch, available: set[str]) -> list[tuple]:
-    """Fake shutil.which: `available` holds bare names or full paths."""
-    calls: list[tuple] = []
+def patch_which(monkeypatch: pytest.MonkeyPatch, available: set[str]) -> None:
+    """Fake shutil.which: only the bare names in `available` are on PATH."""
+    monkeypatch.setattr(
+        main_module.shutil, "which", lambda cmd: cmd if cmd in available else None
+    )
 
-    def which(cmd: str, path: str | None = None) -> str | None:
-        calls.append((cmd, path))
-        if path is not None:
-            cmd = f"{path.rstrip('/')}/{cmd}"
-        return cmd if cmd in available or cmd.rsplit("/", 1)[-1] in available else None
 
-    monkeypatch.setattr(main_module.shutil, "which", which)
-    return calls
+@pytest.fixture
+def node_present(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    """Point the pytubefix bundled-Node check at a file that exists."""
+    node = tmp_path / "node"
+    node.write_bytes(b"")
+    monkeypatch.setattr(main_module, "PYTUBEFIX_NODE_PATH", str(node))
+    return node
+
+
+@pytest.fixture
+def node_missing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    node = tmp_path / "missing" / "node"
+    monkeypatch.setattr(main_module, "PYTUBEFIX_NODE_PATH", str(node))
+    return node
 
 
 # ------------------------------------------------------------------ healthz
+@pytest.mark.usefixtures("node_present")
 def test_healthz_all_dependencies(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
-    patch_which(monkeypatch, ALL_TOOLS)
+    patch_which(monkeypatch, FFMPEG_TOOLS)
     r = client.get("/healthz")
     assert r.status_code == 200
     assert r.json() == {
         "status": "ok",
-        "yt_dlp_version": main_module.YT_DLP_VERSION,
-        "yt_dlp_ejs_version": main_module.ejs_version(),
         "ffmpeg": True,
-        "js_runtime": True,
-        "js_runtimes": {"deno": True, "node": True},
         "pytubefix_version": main_module.PYTUBEFIX_VERSION,
         "pytubefix_node": True,
         "youtube_api": False,
     }
 
 
+@pytest.mark.usefixtures("node_present")
 def test_healthz_reports_youtube_api_without_changing_status(
     make_settings: Callable[..., Settings],
     fake_downloader: FakeDownloader,
@@ -56,7 +62,7 @@ def test_healthz_reports_youtube_api_without_changing_status(
 ) -> None:
     app = create_app(make_settings(youtube_data_api_key="yt-key"), downloader=fake_downloader)  # type: ignore[arg-type]
     with TestClient(app) as client:
-        patch_which(monkeypatch, ALL_TOOLS)
+        patch_which(monkeypatch, FFMPEG_TOOLS)
         r = client.get("/healthz")
         assert r.status_code == 200
         assert r.json()["youtube_api"] is True
@@ -66,81 +72,31 @@ def test_healthz_reports_youtube_api_without_changing_status(
         assert r.json()["youtube_api"] is True
 
 
-@pytest.mark.parametrize(
-    ("available", "runtimes"),
-    [
-        ({"ffmpeg", "ffprobe", "node"}, {"deno": False, "node": True}),  # Deno gone
-        ({"ffmpeg", "ffprobe", "deno"}, {"deno": True, "node": False}),
-    ],
-)
-def test_healthz_ok_with_any_runtime(
-    client: TestClient,
-    monkeypatch: pytest.MonkeyPatch,
-    available: set[str],
-    runtimes: dict[str, bool],
+@pytest.mark.usefixtures("node_missing")
+def test_healthz_missing_bundled_node_is_informational(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    patch_which(monkeypatch, available)
+    patch_which(monkeypatch, FFMPEG_TOOLS)
     r = client.get("/healthz")
     assert r.status_code == 200
-    assert r.json()["js_runtime"] is True
-    assert r.json()["js_runtimes"] == runtimes
+    assert r.json()["status"] == "ok"
+    assert r.json()["pytubefix_node"] is False
 
 
+@pytest.mark.usefixtures("node_present")
 @pytest.mark.parametrize(
-    ("available", "ffmpeg", "js_runtime"),
-    [
-        (set(), False, False),
-        ({"ffmpeg", "node"}, False, True),  # ffprobe missing
-        ({"ffmpeg", "ffprobe"}, True, False),  # no JS runtime at all
-    ],
+    "available",
+    [set(), {"ffmpeg"}, {"ffprobe"}],  # ffmpeg and ffprobe are both required
 )
-def test_healthz_missing_dependencies(
-    client: TestClient,
-    monkeypatch: pytest.MonkeyPatch,
-    available: set[str],
-    ffmpeg: bool,
-    js_runtime: bool,
+def test_healthz_missing_ffmpeg(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, available: set[str]
 ) -> None:
     patch_which(monkeypatch, available)
     r = client.get("/healthz")
     assert r.status_code == 503
     assert r.json()["status"] == "degraded"
-    assert r.json()["ffmpeg"] is ffmpeg
-    assert r.json()["js_runtime"] is js_runtime
-
-
-def test_healthz_reports_configured_runtimes(
-    make_settings: Callable[..., Settings],
-    fake_downloader: FakeDownloader,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    patch_which(monkeypatch, {"ffmpeg", "ffprobe", "bun"})
-    app = create_app(make_settings(ytdlp_js_runtimes="node,bun"), downloader=fake_downloader)  # type: ignore[arg-type]
-    with TestClient(app) as client:
-        body = client.get("/healthz").json()
-    assert body["status"] == "ok"
-    assert body["js_runtimes"] == {"node": False, "bun": True}
-
-
-def test_js_runtime_lookup_by_name(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls = patch_which(monkeypatch, {"qjs"})
-    assert main_module.js_runtime_available("quickjs", None) is True
-    assert calls == [("qjs", None)]  # quickjs's executable is `qjs`
-
-
-def test_js_runtime_lookup_by_file(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls = patch_which(monkeypatch, {"/opt/node/bin/node"})
-    assert main_module.js_runtime_available("node", "/opt/node/bin/node") is True
-    assert main_module.js_runtime_available("node", "/missing/node") is False
-    assert calls[0] == ("/opt/node/bin/node", None)
-
-
-def test_js_runtime_lookup_by_directory(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
-) -> None:  # type: ignore[no-untyped-def]
-    calls = patch_which(monkeypatch, {f"{tmp_path}/node"})
-    assert main_module.js_runtime_available("node", str(tmp_path)) is True
-    assert calls == [("node", str(tmp_path))]
+    assert r.json()["ffmpeg"] is False
+    assert r.json()["pytubefix_node"] is True
 
 
 def test_healthz_needs_no_auth(client: TestClient) -> None:
@@ -192,29 +148,58 @@ def test_openapi_documents_api_key(client: TestClient) -> None:
     }
     assert set(spec["paths"]) == {
         "/healthz",
-        "/v1/videos/{video_id}",
-        "/v1/jobs",
-        "/v1/jobs/{job_id}",
-        "/v1/jobs/{job_id}/file",
-        "/v1/lyrics/pptx",
-        "/v1/lyrics/pptx/batch",
-        "/v2/videos/{video_id}",
-        "/v2/jobs",
-        "/v2/jobs/{job_id}",
-        "/v2/jobs/{job_id}/file",
+        "/api/videos/{video_id}",
+        "/api/jobs",
+        "/api/jobs/{job_id}",
+        "/api/jobs/{job_id}/file",
+        "/api/lyrics/pptx",
+        "/api/lyrics/pptx/batch",
     }
-    for path in ("/v1/lyrics/pptx", "/v1/lyrics/pptx/batch", "/v1/jobs", "/v2/jobs"):
+    for path in ("/api/lyrics/pptx", "/api/lyrics/pptx/batch", "/api/jobs"):
         assert spec["paths"][path]["post"]["security"] == [{"APIKeyHeader": []}]
-    for version in ("v1", "v2"):
-        assert spec["paths"][f"/{version}/videos/{{video_id}}"]["get"]["security"] == [
-            {"APIKeyHeader": []}
-        ]
-        file_op = spec["paths"][f"/{version}/jobs/{{job_id}}/file"]["get"]
-        assert "security" not in file_op  # signed URL, no API key
+    for path in ("/api/videos/{video_id}", "/api/jobs/{job_id}"):
+        assert spec["paths"][path]["get"]["security"] == [{"APIKeyHeader": []}]
+    file_op = spec["paths"]["/api/jobs/{job_id}/file"]["get"]
+    assert "security" not in file_op  # signed URL, no API key
     operation_ids = [
         op["operationId"] for item in spec["paths"].values() for op in item.values()
     ]
     assert len(operation_ids) == len(set(operation_ids))
+
+
+def test_openapi_describes_operations_for_the_docs(client: TestClient) -> None:
+    spec = client.get("/openapi.json").json()
+    assert [tag["name"] for tag in spec["tags"]] == ["videos", "jobs", "files", "lyrics", "health"]
+    assert "X-API-Key" in spec["info"]["description"]
+    operations = {
+        op["operationId"]: op for item in spec["paths"].values() for op in item.values()
+    }
+    assert set(operations) == {
+        "healthz",
+        "get_video",
+        "create_job",
+        "get_job",
+        "delete_job",
+        "download_file",
+        "create_lyrics_pptx",
+        "create_lyrics_pptx_batch",
+    }
+    for op in operations.values():
+        assert op["summary"] and op["description"]
+    error_ref = {"$ref": "#/components/schemas/ErrorResponse"}
+    for name in ("get_video", "create_job", "get_job", "create_lyrics_pptx"):
+        assert operations[name]["responses"]["401"]["content"]["application/json"]["schema"] == error_ref
+    assert "401" not in operations["download_file"]["responses"]
+    assert set(operations["download_file"]["responses"]) >= {"200", "403", "404", "410"}
+    assert operations["create_job"]["responses"]["422"]["content"]["application/json"][
+        "schema"
+    ] == {"$ref": "#/components/schemas/VideosRejectedResponse"}
+    assert set(operations["create_job"]["responses"]) >= {"202", "429", "502"}
+
+
+def test_scalar_docs_preselect_the_api_key(client: TestClient) -> None:
+    body = client.get("/docs").text
+    assert "APIKeyHeader" in body
 
 
 # ---------------------------------------------------------------- lifespan
@@ -232,6 +217,7 @@ def test_lifespan_starts_and_stops_runner(
     assert all(task.done() for task in tasks)
 
 
+@pytest.mark.usefixtures("node_present")
 def test_lifespan_logs_dependency_report(
     settings: Settings,
     fake_downloader: FakeDownloader,
@@ -247,13 +233,31 @@ def test_lifespan_logs_dependency_report(
     assert any("startup.missing_dependencies" in r.message for r in caplog.records)
 
     caplog.clear()
-    patch_which(monkeypatch, {"ffmpeg", "ffprobe", "node"})
+    patch_which(monkeypatch, FFMPEG_TOOLS)
     with caplog.at_level(logging.INFO, logger="cloudy_api"), TestClient(app):
         pass
     messages = [r.message for r in caplog.records]
-    assert any(
-        m.startswith("startup yt_dlp=") and "deno=False node=True" in m for m in messages
+    assert (
+        f"startup pytubefix={main_module.PYTUBEFIX_VERSION} ffmpeg=True youtube_api=False"
+        in messages
     )
+    assert not any("missing_dependencies" in m or "node_missing" in m for m in messages)
+
+
+def test_lifespan_warns_without_bundled_node(
+    settings: Settings,
+    fake_downloader: FakeDownloader,
+    node_missing: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    app = create_app(settings, downloader=fake_downloader)  # type: ignore[arg-type]
+    monkeypatch.setattr(main_module.log, "propagate", True)  # let caplog see it
+    patch_which(monkeypatch, FFMPEG_TOOLS)
+    with caplog.at_level(logging.INFO, logger="cloudy_api"), TestClient(app):
+        pass
+    messages = [r.message for r in caplog.records]
+    assert f"startup.pytubefix_node_missing path={node_missing}" in messages
     assert not any("missing_dependencies" in m for m in messages)
 
 
@@ -264,52 +268,25 @@ def test_create_app_defaults(
     monkeypatch.setattr(main_module, "get_settings", lambda: settings)
     app = create_app()
     assert app.state.settings is settings
-    assert isinstance(app.state.downloader, Downloader)
+    assert isinstance(app.state.downloader, PytubefixDownloader)
     assert app.state.job_manager.downloader is app.state.downloader
-    assert isinstance(app.state.pytubefix_downloader, PytubefixDownloader)
-    assert app.state.job_manager.downloaders == {
-        Engine.YTDLP: app.state.downloader,
-        Engine.PYTUBEFIX: app.state.pytubefix_downloader,
-    }
+    assert not hasattr(app.state, "pytubefix_downloader")
     assert isinstance(app.state.metadata, YouTubeMetadata)
     assert app.state.metadata.enabled is False
 
 
+@pytest.mark.usefixtures("node_present")
 def test_check_dependencies_reports_version(
     monkeypatch: pytest.MonkeyPatch, settings: Settings
 ) -> None:
-    patch_which(monkeypatch, {"ffmpeg", "ffprobe", "node"})
+    patch_which(monkeypatch, FFMPEG_TOOLS)
     assert check_dependencies(settings).model_dump() == {
         "status": "ok",
-        "yt_dlp_version": main_module.YT_DLP_VERSION,
-        "yt_dlp_ejs_version": main_module.ejs_version(),
         "ffmpeg": True,
-        "js_runtime": True,
-        "js_runtimes": {"deno": False, "node": True},
         "pytubefix_version": main_module.PYTUBEFIX_VERSION,
         "pytubefix_node": True,
         "youtube_api": False,
     }
-
-
-def test_ejs_version_is_reported() -> None:
-    from importlib.metadata import version
-
-    assert main_module.ejs_version() == version("yt-dlp-ejs")
-
-
-def test_missing_ejs_degrades_health(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
-    from importlib.metadata import PackageNotFoundError
-
-    def missing(name: str) -> str:
-        raise PackageNotFoundError(name)
-
-    patch_which(monkeypatch, ALL_TOOLS)
-    monkeypatch.setattr(main_module, "package_version", missing)
-    r = client.get("/healthz")
-    assert r.status_code == 503
-    assert r.json()["status"] == "degraded"
-    assert r.json()["yt_dlp_ejs_version"] is None
 
 
 def test_logging_is_configured_once() -> None:
@@ -340,3 +317,18 @@ def test_main_runs_uvicorn(monkeypatch: pytest.MonkeyPatch) -> None:
     assert calls == [
         (("cloudy_api.main:app",), {"host": "0.0.0.0", "port": 9123, "workers": 1})
     ]
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("get", "/v1/videos/dQw4w9WgXcQ"),
+        ("post", "/v1/jobs"),
+        ("get", "/v1/jobs/abc/file"),
+        ("post", "/v1/lyrics/pptx"),
+        ("get", "/v2/videos/dQw4w9WgXcQ"),
+        ("post", "/v2/jobs"),
+    ],
+)
+def test_versioned_routes_are_gone(client: TestClient, method: str, path: str) -> None:
+    assert client.request(method, path, headers={"X-API-Key": "test-api-key"}).status_code == 404

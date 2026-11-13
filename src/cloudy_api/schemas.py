@@ -26,13 +26,6 @@ class Format(StrEnum):
         return {Format.MP4_720: 720, Format.MP4_1080: 1080}.get(self)
 
 
-class Engine(StrEnum):
-    """Download backend behind a job: /v1 uses yt-dlp, /v2 uses pytubefix."""
-
-    YTDLP = "ytdlp"
-    PYTUBEFIX = "pytubefix"
-
-
 class JobStatus(StrEnum):
     QUEUED = "queued"
     RUNNING = "running"
@@ -62,8 +55,33 @@ class JobCreate(BaseModel):
 
 
 class ErrorInfo(BaseModel):
-    code: str
+    code: str = Field(description="Stable, machine-readable error code.")
+    message: str = Field(description="Human-readable explanation (English).")
+
+
+class ErrorResponse(BaseModel):
+    """Body of every API error except request validation (which uses FastAPI's list)."""
+
+    detail: ErrorInfo
+
+
+class RejectedVideo(BaseModel):
+    video_id: str
+    code: str = Field(
+        description="`too_long`, `live`, `unknown_duration`, `not_downloadable`, `private`, "
+        "`unavailable`, `age_restricted`, `members_only`, `geo_restricted`, …"
+    )
     message: str
+
+
+class VideosRejectedInfo(ErrorInfo):
+    videos: list[RejectedVideo] = []
+
+
+class VideosRejectedResponse(BaseModel):
+    """`422` from job creation: `code` is `videos_rejected` (with `videos`) or `batch_too_large`."""
+
+    detail: VideosRejectedInfo
 
 
 class VideoInfo(BaseModel):

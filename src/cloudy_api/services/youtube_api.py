@@ -1,14 +1,14 @@
 """Video metadata through the YouTube Data API v3 (``videos.list``).
 
-Replaces the yt-dlp/pytubefix probe for ``GET /videos/{id}`` and the job
+Replaces the pytubefix probe for ``GET /videos/{id}`` and the job
 preflight: one official API call (1 quota unit, up to 50 ids) instead of a full
 extraction, which is slow and triggers YouTube's bot check on datacenter IPs.
-The API can't download media, so the engines still handle ``download()``.
+The API can't download media, so the engine still handles ``download()``.
 
 Without ``YOUTUBE_DATA_API_KEY`` every call delegates to the engine's own
 ``probe`` (the previous behaviour).
 
-Blocking, like the engines: callers run it through ``asyncio.to_thread``.
+Blocking, like the engine: callers run it through ``asyncio.to_thread``.
 """
 
 import json
@@ -135,7 +135,7 @@ class YouTubeMetadata:
 
     # ----------------------------------------------------------------- probe
     def probe(self, video_id: str, *, fallback: VideoDownloader) -> VideoInfo:
-        """Metadata for one video; raises ``DownloaderError`` like the engines."""
+        """Metadata for one video; raises ``DownloaderError`` like the engine."""
         if not self.enabled:
             return fallback.probe(video_id)
         result = self.probe_many([video_id], fallback=fallback)[video_id]
@@ -231,7 +231,7 @@ class YouTubeMetadata:
 
         if len(ids) <= 1:
             return {video_id: probe_one(video_id) for video_id in ids}
-        # Each engine probe runs yt-dlp/pytubefix (+ a JS runtime): bounded.
+        # Each engine probe runs a pytubefix extraction (+ Node): bounded.
         workers = min(self._settings.probe_concurrency, len(ids))
         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="probe") as pool:
             return dict(zip(ids, pool.map(probe_one, ids), strict=True))

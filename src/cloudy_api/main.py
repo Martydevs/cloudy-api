@@ -3,22 +3,20 @@ import os
 import shutil
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from importlib.metadata import PackageNotFoundError
-from importlib.metadata import version as package_version
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.routing import APIRoute
 from pydantic import BaseModel
 from pytubefix.botGuard.bot_guard import NODE_PATH as PYTUBEFIX_NODE_PATH
 from pytubefix.version import __version__ as PYTUBEFIX_VERSION
 from scalar_fastapi import get_scalar_api_reference
-from yt_dlp.version import __version__ as YT_DLP_VERSION
 
-from .config import JS_RUNTIME_EXECUTABLES, Settings, get_settings
+from .config import Settings, get_settings
 from .middleware import BodySizeLimitMiddleware
 from .routers import jobs, lyrics, videos
-from .services.downloader import Downloader, VideoDownloader
+from .services.downloader import VideoDownloader
 from .services.jobs import JobManager
 from .services.lyrics_arranger import LyricsArranger
 from .services.pytubefix_downloader import PytubefixDownloader
@@ -26,59 +24,79 @@ from .services.youtube_api import YouTubeMetadata
 
 log = logging.getLogger("cloudy_api")
 
+# Every API route lives under this prefix; /healthz and the docs stay at the root.
+API_PREFIX = "/api"
+
+API_DESCRIPTION = """\
+On-demand YouTube downloads (MP4 720p/1080p, MP3) and lyrics-to-PowerPoint
+conversion for the Cloudy app.
+
+## Authentication
+
+Every `/api` route needs the `X-API-Key` header, except
+`GET /api/jobs/{job_id}/file`, which is authorized by the signature in its
+query string. Keep the key on the server (a Nuxt server route), never in the
+browser.
+
+## Downloading a video
+
+1. Optional: `GET /api/videos/{video_id}` to show the title and check `downloadable`.
+2. `POST /api/jobs` with `video_ids` and a `format` → `202 {job_id}`.
+3. Poll `GET /api/jobs/{job_id}` every 2–3 s until `status` is `done` or `failed`.
+4. Send the browser to `download_url`. It expires after ~10 minutes; poll again
+   for a fresh one. The file itself is deleted after `FILE_TTL_MINUTES` (30).
+
+Jobs live in memory: a `404` on a known job means it expired or the service
+restarted; create it again.
+
+## Errors
+
+Errors are `{"detail": {"code": "...", "message": "..."}}`; branch on `code`.
+Malformed requests get FastAPI's standard `422` with a `detail` list instead.
+"""
+
+OPENAPI_TAGS = [
+    {"name": "videos", "description": "YouTube video metadata."},
+    {
+        "name": "jobs",
+        "description": "Asynchronous download jobs: create, poll, cancel.",
+    },
+    {
+        "name": "files",
+        "description": "Signed download links for finished jobs (no API key).",
+    },
+    {
+        "name": "lyrics",
+        "description": "Lyrics HTML (Letras) to PowerPoint, synchronous.",
+    },
+    {"name": "health", "description": "Readiness probe (no API key)."},
+]
+
+
+def _operation_id(route: APIRoute) -> str:
+    # Stable, readable ids (`create_job`, `get_video`, …) for client generators.
+    return route.name
+
 
 class Health(BaseModel):
+    # "ok" iff ffmpeg and ffprobe are on PATH (pytubefix merges streams and
+    # converts MP3 through them); otherwise "degraded" and /healthz returns 503.
     status: str
-    yt_dlp_version: str
-    # yt-dlp-ejs: challenge-solver scripts the JS runtime executes. Required for
-    # full YouTube support; must be the exact version yt-dlp pins (uv.lock).
-    yt_dlp_ejs_version: str | None
     ffmpeg: bool
-    # True when at least one enabled JS runtime is installed.
-    js_runtime: bool
-    # Every enabled runtime (YTDLP_JS_RUNTIMES) and whether it was found.
-    js_runtimes: dict[str, bool]
-    # /v2 (pytubefix). Informational only: they don't change status/503.
     pytubefix_version: str
     # The Node.js binary pytubefix bundles to generate PO tokens.
+    # Informational only: it doesn't change status/503.
     pytubefix_node: bool
-    # YOUTUBE_DATA_API_KEY is set (metadata via the Data API, not the engines).
+    # YOUTUBE_DATA_API_KEY is set (metadata via the Data API, not the engine).
     # Informational only.
     youtube_api: bool
 
 
-def js_runtime_available(name: str, path: str | None) -> bool:
-    """Mirror yt-dlp's lookup: PATH by default, or an explicit file/directory."""
-    executable = JS_RUNTIME_EXECUTABLES[name]
-    if path is None:
-        return shutil.which(executable) is not None
-    if os.path.isdir(path):
-        return shutil.which(executable, path=path) is not None
-    return shutil.which(path) is not None
-
-
-def ejs_version() -> str | None:
-    try:
-        return package_version("yt-dlp-ejs")
-    except PackageNotFoundError:
-        return None
-
-
 def check_dependencies(settings: Settings) -> Health:
-    ejs = ejs_version()
     ffmpeg = shutil.which("ffmpeg") is not None and shutil.which("ffprobe") is not None
-    runtimes = {
-        name: js_runtime_available(name, path)
-        for name, path in settings.ytdlp_js_runtimes.items()
-    }
-    js_runtime = any(runtimes.values())
     return Health(
-        status="ok" if ffmpeg and js_runtime and ejs else "degraded",
-        yt_dlp_version=YT_DLP_VERSION,
-        yt_dlp_ejs_version=ejs,
+        status="ok" if ffmpeg else "degraded",
         ffmpeg=ffmpeg,
-        js_runtime=js_runtime,
-        js_runtimes=runtimes,
         pytubefix_version=PYTUBEFIX_VERSION,
         pytubefix_node=os.path.isfile(PYTUBEFIX_NODE_PATH),
         youtube_api=settings.youtube_data_api_key is not None,
@@ -98,17 +116,14 @@ def _configure_logging() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     health = check_dependencies(app.state.settings)
-    runtimes = " ".join(f"{name}={found}" for name, found in health.js_runtimes.items())
     log.info(
-        "startup yt_dlp=%s yt_dlp_ejs=%s ffmpeg=%s %s youtube_api=%s",
-        health.yt_dlp_version, health.yt_dlp_ejs_version, health.ffmpeg, runtimes,
-        health.youtube_api,
+        "startup pytubefix=%s ffmpeg=%s youtube_api=%s",
+        health.pytubefix_version, health.ffmpeg, health.youtube_api,
     )
     if health.status != "ok":
-        log.warning(
-            "startup.missing_dependencies ffmpeg=%s js_runtime=%s yt_dlp_ejs=%s",
-            health.ffmpeg, health.js_runtime, health.yt_dlp_ejs_version,
-        )
+        log.warning("startup.missing_dependencies ffmpeg=%s", health.ffmpeg)
+    if not health.pytubefix_node:
+        log.warning("startup.pytubefix_node_missing path=%s", PYTUBEFIX_NODE_PATH)
 
     manager: JobManager = app.state.job_manager
     await manager.start()
@@ -122,7 +137,6 @@ def create_app(
     settings: Settings | None = None,
     downloader: VideoDownloader | None = None,
     arranger: LyricsArranger | None = None,
-    pytubefix_downloader: VideoDownloader | None = None,
     metadata: YouTubeMetadata | None = None,
 ) -> FastAPI:
     _configure_logging()
@@ -131,23 +145,19 @@ def create_app(
     # Scalar replaces Swagger UI / ReDoc as the interactive docs at /docs.
     app = FastAPI(
         title="Cloudy API",
-        version="0.1.0",
-        description=(
-            "On-demand YouTube downloads (MP4 720p/1080p, MP3) and "
-            "lyrics-to-PowerPoint conversion for the Cloudy app."
-        ),
+        version="0.2.0",
+        description=API_DESCRIPTION,
+        openapi_tags=OPENAPI_TAGS,
+        generate_unique_id_function=_operation_id,
         lifespan=lifespan,
         docs_url=None,
         redoc_url=None,
     )
     app.state.settings = settings
-    app.state.downloader = downloader or Downloader(settings)
-    app.state.pytubefix_downloader = pytubefix_downloader or PytubefixDownloader(settings)
-    # Metadata for /v1 and /v2 alike (YouTube Data API, engine probe as fallback).
+    app.state.downloader = downloader or PytubefixDownloader(settings)
+    # Video metadata: YouTube Data API, with the engine's probe as fallback.
     app.state.metadata = metadata or YouTubeMetadata(settings)
-    app.state.job_manager = JobManager(
-        settings, app.state.downloader, pytubefix_downloader=app.state.pytubefix_downloader
-    )
+    app.state.job_manager = JobManager(settings, app.state.downloader)
     app.state.arranger = arranger or LyricsArranger(settings)
 
     app.add_middleware(
@@ -160,8 +170,18 @@ def create_app(
     # Added last so it runs first: oversized bodies are refused before anything else.
     app.add_middleware(BodySizeLimitMiddleware, max_bytes=settings.max_request_bytes)
 
-    @app.get("/healthz", tags=["health"])
+    @app.get(
+        "/healthz",
+        tags=["health"],
+        summary="Health check",
+        response_model=Health,
+        responses={503: {"model": Health, "description": "ffmpeg or ffprobe is missing."}},
+    )
     async def healthz() -> JSONResponse:
+        """`200` when ffmpeg and ffprobe are installed, else `503` with `status:
+        "degraded"`. `pytubefix_node` and `youtube_api` are informational. Also
+        handy to wake the service before a user starts a download.
+        """
         health = check_dependencies(settings)
         code = 200 if health.status == "ok" else 503
         return JSONResponse(health.model_dump(), status_code=code)
@@ -171,17 +191,15 @@ def create_app(
         return get_scalar_api_reference(
             openapi_url=app.openapi_url,
             title=f"{app.title} docs",
+            # Pre-selects the X-API-Key scheme in "Test Request"; the key itself
+            # is typed in the browser and never stored.
+            authentication={"preferredSecurityScheme": "APIKeyHeader"},
+            default_open_all_tags=True,
             telemetry=False,
         )
 
-    app.include_router(videos.router)
-    app.include_router(jobs.router)
-    app.include_router(jobs.files_router)
-    # /v2: pytubefix instead of yt-dlp, a temporary YouTube bot-check workaround.
-    app.include_router(videos.v2_router)
-    app.include_router(jobs.v2_router)
-    app.include_router(jobs.v2_files_router)
-    app.include_router(lyrics.router)
+    for router in (videos.router, jobs.router, jobs.files_router, lyrics.router):
+        app.include_router(router, prefix=API_PREFIX)
     return app
 
 

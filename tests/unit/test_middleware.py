@@ -13,7 +13,7 @@ from cloudy_api.services.lyrics_arranger import LyricsArranger
 pytestmark = pytest.mark.anyio
 
 LIMIT = 2048
-URL = "/v1/lyrics/pptx/batch"
+URL = "/api/lyrics/pptx/batch"
 TOO_LARGE = {
     "detail": {
         "code": "request_too_large",

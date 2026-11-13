@@ -15,30 +15,43 @@ from ..services.lyrics_pptx import (
     generate_lyrics_pptx,
 )
 from ..services.pptx_builder import PPTX_MEDIA_TYPE
+from .responses import UNAUTHORIZED, error
 
 ZIP_MEDIA_TYPE = "application/zip"
 
 log = logging.getLogger(__name__)
 
 router = APIRouter(
-    prefix="/v1/lyrics",
+    prefix="/lyrics",
     tags=["lyrics"],
     dependencies=[Depends(require_api_key)],
+    responses={
+        **UNAUTHORIZED,
+        413: error("The body is larger than `MAX_REQUEST_BYTES` (`request_too_large`)."),
+    },
 )
 
 
 @router.post(
     "/pptx",
     response_class=Response,
+    summary="Convert lyrics to a PowerPoint",
     responses={
         200: {
-            "description": "The presentation. `X-Lyrics-Arranged-By` is `llm` or `fallback`.",
+            "description": (
+                "The presentation. `X-Lyrics-Arranged-By` is `llm` or `fallback`; "
+                "`X-Slide-Count` is the number of slides."
+            ),
             "content": {PPTX_MEDIA_TYPE: {"schema": {"type": "string", "format": "binary"}}},
-        }
+        },
+        422: error("No lyrics found (`no_lyrics`) or more than 300 lines (`lyrics_too_long`)."),
     },
 )
 async def create_lyrics_pptx(body: LyricsRequest, arranger: ArrangerDep) -> Response:
-    """Turn Letras lyrics HTML into a .pptx with two paragraphs per slide."""
+    """Turn lyrics HTML scraped from Letras (or plain text) into a 16:9 `.pptx`,
+    two lines per slide, each stanza starting on a new slide. Synchronous: the
+    response body is the file.
+    """
     try:
         pptx = await generate_lyrics_pptx(body, arranger)
     except LyricsError as exc:
@@ -64,6 +77,7 @@ async def create_lyrics_pptx(body: LyricsRequest, arranger: ArrangerDep) -> Resp
 @router.post(
     "/pptx/batch",
     response_class=Response,
+    summary="Convert several lyrics to PowerPoints (ZIP)",
     responses={
         200: {
             "description": (
@@ -73,13 +87,20 @@ async def create_lyrics_pptx(body: LyricsRequest, arranger: ArrangerDep) -> Resp
                 "`X-Batch-Succeeded` / `X-Batch-Failed` carry the counts."
             ),
             "content": {ZIP_MEDIA_TYPE: {"schema": {"type": "string", "format": "binary"}}},
-        }
+        },
+        422: error(
+            "`batch_too_large` (more than `MAX_LYRICS_BATCH` items) or `all_items_failed` "
+            "(the detail then has `items`, shaped like the manifest entries)."
+        ),
     },
 )
 async def create_lyrics_pptx_batch(
     body: LyricsBatchRequest, arranger: ArrangerDep, settings: SettingsDep
 ) -> Response:
-    """Turn several Letras lyrics HTML items into presentations, one at a time, in a ZIP."""
+    """Convert 1 to `MAX_LYRICS_BATCH` (default 3) songs, one at a time, into a ZIP
+    of `.pptx` files plus `manifest.json`. Partial success is normal: failed
+    songs only appear in the manifest.
+    """
     if len(body.items) > settings.max_lyrics_batch:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT,

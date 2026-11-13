@@ -1,13 +1,13 @@
-"""pytubefix-based downloader behind the /v2 API.
+"""pytubefix-based download engine behind the /api routes.
 
-A temporary workaround for YouTube's "confirm you're not a bot" check on
-datacenter IPs: pytubefix's WEB client sends a PO token that it generates by
-running BotGuard in Node.js (bundled through ``nodejs-wheel-binaries``).
+Works around YouTube's "confirm you're not a bot" check on datacenter IPs:
+pytubefix's clients send a PO token that it generates by running BotGuard in
+Node.js (bundled through ``nodejs-wheel-binaries``).
 
-Same contract as :class:`~.downloader.Downloader`: blocking (callers use
+Implements :class:`~.downloader.VideoDownloader`: blocking (callers use
 ``asyncio.to_thread``), returns ``VideoInfo``/``DownloadResult`` and raises
-``DownloaderError``/``Cancelled``. Unlike yt-dlp, pytubefix doesn't merge
-streams, so adaptive video+audio and MP3 conversion run ffmpeg directly.
+``DownloaderError``/``Cancelled``. pytubefix doesn't merge streams, so adaptive
+video+audio and MP3 conversion run ffmpeg directly.
 """
 
 import logging
@@ -320,8 +320,7 @@ def _bitrate(stream: Any) -> int:
 
 
 def pick_video(streams: list[Any], max_height: int) -> Any | None:
-    """Best video-only stream up to ``max_height``, preferring H.264 (avc1)
-    like v1's ``bv*[height<=N][vcodec^=avc1]`` selector."""
+    """Best video-only stream up to ``max_height``, preferring H.264 (avc1)."""
     candidates = [
         s for s in streams
         if s.includes_video_track
